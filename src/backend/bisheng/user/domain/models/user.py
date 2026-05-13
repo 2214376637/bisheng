@@ -22,6 +22,7 @@ class UserBase(SQLModelSerializable):
     dept_id: Optional[str] = Field(default=None, index=True)
     org_knowledge_ids: Optional[List[int]] = Field(default=[], sa_column=Column(JSON), description='List of Organization Knowledge Base IDs')
     remark: Optional[str] = Field(default=None, index=False)
+    avatar: Optional[str] = Field(default=None, index=False)
     delete: int = Field(default=0, index=False)
     create_time: Optional[datetime] = Field(default=None, sa_column=Column(
         DateTime, nullable=False, index=True, server_default=text('CURRENT_TIMESTAMP')))
@@ -77,6 +78,7 @@ class UserCreate(UserBase):
 
 class UserUpdate(SQLModelSerializable):
     user_id: int
+    avatar: Optional[str] = None
     delete: Optional[int] = 0
     org_knowledge_ids: Optional[List[int]] = None
 
