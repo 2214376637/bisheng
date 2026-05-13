@@ -82,8 +82,6 @@ class KnowledgeBase(SQLModelSerializable):
                                  description='Knowledge Base Level, value from KnowledgeLevelEnum')
     is_released: bool = Field(default=False, description='is released to knowledge space square')
     auth_type: AuthTypeEnum = Field(default=AuthTypeEnum.PUBLIC, description='Authentication Type')
-    level: Optional[int] = Field(index=False, default=KnowledgeLevelEnum.LEVEL_MEMBER.value,
-                                 description='Knowledge Base Level, value from KnowledgeLevelEnum')
     parent_id: Optional[int] = Field(default=None, index=True,
                                      description='Parent Knowledge Base ID')
 
@@ -117,7 +115,6 @@ class KnowledgeUpdate(BaseModel):
     knowledge_id: int
     name: Optional[str] = None
     description: Optional[str] = None
-    level: Optional[int] = None
     level: Optional[int] = None
     parent_id: Optional[int] = None
 
