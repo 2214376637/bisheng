@@ -75,6 +75,14 @@ def create_app():
     def get_health():
         return {'status': 'OK'}
 
+    @app.get('/api/v1/all')
+    def get_all_stub():
+        return {'status_code': 200, 'status_message': 'OK', 'data': {}}
+
+    @app.get('/api/v1/component')
+    def get_component_stub():
+        return {'status_code': 200, 'status_message': 'OK', 'data': []}
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,

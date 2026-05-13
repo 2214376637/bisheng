@@ -13,8 +13,8 @@ from bisheng.core.database import get_async_db_session
 async def test_pagination():
     print("========== 毕昇多级权限引擎：分页接口与Shift-Left优化集成测试 ==========")
     
-    # 模拟查找一个普通测试账号（假设 user_id = 2）
-    test_user_id = 2
+    # 模拟查找一个普通测试账号（假设 user_id = 1）
+    test_user_id = 1
     print(f"\n[1] 正在从数据库拉取测试账号实体信息 (user_id = {test_user_id})...")
     
     try:

@@ -29,13 +29,13 @@ def test_auth():
             print("❌ 失败: kb2 和 kb3 没有被包含进去。")
             
         # 2. 测试权限拦截器
-        print(f"\\n[2] 开始模拟 RAG 拦截器调用 judge_knowledge_permission()...")
+        print(f"\\n[1] 开始模拟 RAG 拦截器调用 judge_knowledge_permission()...")
         
-        # 为了测试，我们在数据库里直接找 user_id = 2 的真实 user_name
+        # 为了测试，我们在数据库里直接找 user_id = 1 的真实 user_name
         with get_sync_db_session() as session:
-            test_user = session.get(User, 2)
+            test_user = session.get(User, 1)
             if not test_user:
-                print("❌ 无法在数据库中找到 user_id = 2 的测试账号，请确认该账号存在！")
+                print("❌ 无法在数据库中找到 user_id = 1 的测试账号，请确认该账号存在！")
                 return
             test_user_name = test_user.user_name
         
