@@ -31,7 +31,7 @@ start_default(){
 
 if [ "$start_mode" = "api" ]; then
     echo "Starting API server..."
-    uvicorn bisheng.main:app --host 0.0.0.0 --port 7860 --no-access-log --workers 8
+    uvicorn bisheng.main:app --host 0.0.0.0 --port 7860 --no-access-log --workers 2
 elif [ "$start_mode" = "knowledge" ]; then
     echo "Starting Knowledge Celery worker..."
     start_knowledge

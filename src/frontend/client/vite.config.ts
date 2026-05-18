@@ -249,9 +249,6 @@ export default defineConfig(({ command }) => ({
             }
 
             // Existing chunks
-            if (normalizedId.includes('@radix-ui')) {
-              return 'radix-ui';
-            }
             if (normalizedId.includes('framer-motion')) {
               return 'framer-motion';
             }
@@ -316,9 +313,11 @@ export default defineConfig(({ command }) => ({
     chunkSizeWarningLimit: 1500,
   },
   resolve: {
+    dedupe: ['react', 'react-dom'],
     alias: {
-      '~': path.join(__dirname, 'src/'),
-      '@': path.join(__dirname, 'src/'),
+      '~': path.resolve(__dirname, './src'),
+      '@/lib/utils': path.resolve(__dirname, './src/lib/utils.ts'),
+      '@': path.resolve(__dirname, './src'),
       $fonts: path.resolve(__dirname, 'public/fonts'),
     },
   },
