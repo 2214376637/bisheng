@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion';
 import cloneDeep from 'lodash/cloneDeep';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { submitLinsightFeedback } from '~/api/linsight';
 import { useGetBsConfig } from '~/hooks/queries/data-provider';
 import { useLinsightManager, useLinsightSessionManager } from '~/hooks/useLinsightManager';
@@ -20,6 +20,23 @@ export const TaskFlow = ({ versionId, isSharePage, setVersions, setVersionId }) 
     const { showToast } = useToastContext();
     const { stop, sendInput } = useLinsightWebSocket(versionId)
     const localize = useLocalize()
+
+    const [logoError, setLogoError] = useState(false);
+    const customLogo = bsConfig?.sidebarIcon?.image;
+
+    useEffect(() => {
+        setLogoError(false);
+    }, [customLogo]);
+
+    const logoSrc = useMemo(() => {
+        if (logoError || !customLogo) {
+            return `${__APP_ENV__.BASE_URL}/assets/lingsi.svg`;
+        }
+        if (customLogo.startsWith('http') || customLogo.startsWith(__APP_ENV__.BASE_URL)) {
+            return customLogo;
+        }
+        return `${__APP_ENV__.BASE_URL}${customLogo}`;
+    }, [customLogo, logoError]);
 
     const linsight = useMemo(() => {
         const linsight = getLinsight(versionId)
@@ -121,7 +138,8 @@ export const TaskFlow = ({ versionId, isSharePage, setVersions, setVersionId }) 
                         <div className='size-10 mx-auto'>
                             <img
                                 className='size-full grayscale opacity-20'
-                                src={__APP_ENV__.BASE_URL + bsConfig?.sidebarIcon.image}
+                                src={logoSrc}
+                                onError={() => setLogoError(true)}
                                 alt="Loading"
                             />
                         </div>

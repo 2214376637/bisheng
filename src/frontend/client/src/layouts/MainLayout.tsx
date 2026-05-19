@@ -115,13 +115,35 @@ function Sidebar() {
     Cookies.set('lang', userLang, { expires: 365 });
   }, [setLangcode]);
 
+  const [logoError, setLogoError] = React.useState(false);
+  const customLogo = bsConfig?.sidebarIcon?.image;
+
+  React.useEffect(() => {
+    setLogoError(false);
+  }, [customLogo]);
+
+  const logoSrc = useMemo(() => {
+    if (logoError || !customLogo) {
+      return `${__APP_ENV__.BASE_URL}/assets/lingsi.svg`;
+    }
+    if (customLogo.startsWith('http') || customLogo.startsWith(__APP_ENV__.BASE_URL)) {
+      return customLogo;
+    }
+    return `${__APP_ENV__.BASE_URL}${customLogo}`;
+  }, [customLogo, logoError]);
+
   const displayName = user?.name ?? user?.username ?? localize('com_nav_user');
 
   return (
     <div className="w-16 h-screen flex flex-col items-center justify-between py-4 px-2 shrink-0">
       <div className="flex flex-col gap-10 items-center">
         <div className="size-10 relative">
-          <img src={__APP_ENV__.BASE_URL + bsConfig?.sidebarIcon.image} className="size-full" alt="logo" />
+          <img
+            src={logoSrc}
+            onError={() => setLogoError(true)}
+            className="size-full"
+            alt="logo"
+          />
         </div>
 
         <div className="flex flex-col gap-4 items-center">
