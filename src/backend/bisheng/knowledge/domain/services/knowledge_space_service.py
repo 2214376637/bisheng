@@ -42,6 +42,8 @@ from bisheng.knowledge.domain.schemas.knowledge_space_schema import (
 from bisheng.knowledge.domain.services.knowledge_audit_telemetry_service import KnowledgeAuditTelemetryService
 from bisheng.knowledge.domain.services.knowledge_service import KnowledgeService
 from bisheng.knowledge.domain.services.knowledge_utils import KnowledgeUtils
+from sqlmodel import select
+from bisheng.core.database import get_async_db_session
 from bisheng.llm.domain import LLMService
 from bisheng.user.domain.models.user import UserDao
 from bisheng.user.domain.models.user_role import UserRoleDao
@@ -678,12 +680,14 @@ class KnowledgeSpaceService(KnowledgeUtils):
         Returns: {"total": int, "page": int, "page_size": int, "data": List[KnowledgeFile]}
         """
         await self._require_read_permission(space_id)
+        authorized_file_ids = await KnowledgeFileDao.aget_authorized_file_ids(self.login_user, space_id)
         total, items = await asyncio.gather(
-            SpaceFileDao.async_count_children(space_id, parent_id, file_status),
+            SpaceFileDao.async_count_children(space_id, parent_id, file_status, authorized_file_ids=authorized_file_ids),
             SpaceFileDao.async_list_children(space_id, parent_id, order_field, order_sort, file_status, page,
-                                             page_size),
+                                             page_size, authorized_file_ids=authorized_file_ids),
         )
         data = await self._handle_file_folder_extra_info(items)
+
         return {"total": total, "page": page, "page_size": page_size, "data": data}
 
     async def search_space_children(self, space_id: int, parent_id: Optional[int] = None, tag_ids: List[int] = None,
@@ -713,10 +717,29 @@ class KnowledgeSpaceService(KnowledgeUtils):
                 filter_files = list(set(filter_files) & set([int(one.resource_id) for one in resources]))
             else:
                 filter_files = [int(one.resource_id) for one in resources]
-            if not filter_files:
-                return {"total": 0, "page": page, "page_size": page_size, "data": []}
+        # 获取允许访问的文档（包括独立授权和继承知识库授权）和文件夹
+        authorized_file_ids = await KnowledgeFileDao.aget_authorized_file_ids(self.login_user, space_id)
+        async with get_async_db_session() as session:
+            folders = (await session.exec(
+                select(KnowledgeFile.id).where(
+                    KnowledgeFile.knowledge_id == space_id,
+                    KnowledgeFile.file_type == 0
+                )
+            )).all()
+        allowed_ids = list(set(authorized_file_ids) | set(folders))
+        if not allowed_ids:
+            allowed_ids = [-1]
+
+        if filter_files:
+            filter_files = list(set(filter_files) & set(allowed_ids))
+        else:
+            filter_files = allowed_ids
+
+        if not filter_files:
+            filter_files = [-1]
 
         extra_file_ids = []
+
         if keyword:
             query = {"match_phrase": {"text": keyword}}
             if filter_files:

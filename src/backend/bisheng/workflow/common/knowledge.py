@@ -298,6 +298,37 @@ class RagUtils(BaseNode):
                                                                                   parent_node=self)
             if milvus_filter is None and es_filter is None:
                 continue
+
+            # 注入文档独立权限与4级知识库继承判定过滤
+            from bisheng.user.domain.models.user import UserDao
+            from bisheng.knowledge.domain.models.knowledge_file import KnowledgeFileDao
+            
+            user_obj = UserDao.get_user(self.user_id)
+            if not user_obj:
+                user_authorized_file_ids = []
+            else:
+                user_authorized_file_ids = KnowledgeFileDao.get_authorized_file_ids(user_obj, knowledge_id)
+
+            if milvus_filter == "" and es_filter == {}:
+                # 如果没有元数据过滤条件，直接使用用户有权访问的所有文档 ID
+                if not user_authorized_file_ids:
+                    # 如果用户无权访问任何文档，拦截该知识库的检索
+                    continue
+                milvus_filter = f"document_id in {user_authorized_file_ids}"
+                es_filter = {"filter": [{"terms": {"metadata.document_id": user_authorized_file_ids}}]}
+            else:
+                # 如果有元数据过滤条件，取交集
+                try:
+                    meta_file_ids = es_filter["filter"][0]["terms"]["metadata.document_id"]
+                    final_file_ids = list(set(meta_file_ids) & set(user_authorized_file_ids))
+                except Exception:
+                    final_file_ids = user_authorized_file_ids
+
+                if not final_file_ids:
+                    continue
+                milvus_filter = f"document_id in {final_file_ids}"
+                es_filter = {"filter": [{"terms": {"metadata.document_id": final_file_ids}}]}
+
             if milvus_vector:
                 all_milvus.append(milvus_vector)
                 milvus_filter = {"expr": milvus_filter} if milvus_filter else {}

@@ -5,7 +5,7 @@ from typing import List, Optional, Dict, Any, Literal
 
 # if TYPE_CHECKING:
 from pydantic import field_validator
-from sqlalchemy import JSON, Column, DateTime, String, or_, text, Text, and_
+from sqlalchemy import JSON, Column, DateTime, String, or_, text, Text, and_, INT
 from sqlmodel import Field, delete, func, select, update, col
 
 from bisheng.common.models.base import SQLModelSerializable
@@ -80,6 +80,8 @@ class KnowledgeFileBase(SQLModelSerializable):
         DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP')))
     update_time: Optional[datetime] = Field(default=None, sa_column=Column(
         DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP')))
+    org_kb_id: Optional[int] = Field(default=None, sa_column=Column(INT, nullable=True, index=True), description='所属院系/机构节点 ID（四级知识库机制继承鉴权）')
+
 
 
 class QAKnowledgeBase(SQLModelSerializable):
@@ -123,6 +125,20 @@ class QAKnowledgeBase(SQLModelSerializable):
 
 class KnowledgeFile(KnowledgeFileBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
+
+
+class DocumentAccess(SQLModelSerializable, table=True):
+    __tablename__ = "document_access"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    file_id: int = Field(index=True, description='关联的文档 (KnowledgeFile.id)')
+    subject_type: str = Field(index=True, description='授权对象类型：user(用户) / org(机构节点)')
+    subject_id: str = Field(index=True, description='对应 ID (user_id 或 org_kb_id)')
+    create_time: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    )
+
 
 
 class QAKnowledge(QAKnowledgeBase, table=True):
@@ -565,6 +581,168 @@ class KnowledgeFileDao(KnowledgeFileBase):
             session.exec(statement)
             session.commit()
 
+    @classmethod
+    async def aget_authorized_file_ids(cls, user_info, knowledge_id: int) -> List[int]:
+        """
+        根据文档独立权限与四级知识库继承规则，计算当前用户在此知识库下有权访问的所有文件 ID 集合。
+        """
+        from bisheng.user.domain.models.user_role import UserRoleDao
+        from bisheng.knowledge.domain.models.knowledge import KnowledgeDao
+        
+        # 1. 超级管理员拥有全部权限
+        role_list = await UserRoleDao.aget_user_roles(user_info.user_id)
+        is_admin = any(role.role_id == 1 for role in role_list) if role_list else False
+        
+        # 查询该知识库下所有正常状态的文件 (2 代表 SUCCESS)
+        all_files = await cls.aget_file_by_filters(knowledge_id=knowledge_id, status=[2])
+        if is_admin:
+            return [f.id for f in all_files]
+
+        user_id_str = str(user_info.user_id)
+        
+        # 2. 获取该知识库下所有文件已配置的独立文档级权限
+        file_ids = [f.id for f in all_files]
+        if not file_ids:
+            return []
+            
+        async with get_async_db_session() as session:
+            stmt = select(DocumentAccess).where(col(DocumentAccess.file_id).in_(file_ids))
+            db_access = (await session.exec(stmt)).all()
+            
+        access_map = {}
+        for acc in db_access:
+            access_map.setdefault(acc.file_id, []).append(acc)
+
+        # 3. 获取用户基于 org_knowledge_ids 和四级知识库继承规则 被授权的全部知识库节点集合
+        authorized_kb_ids = await KnowledgeDao.aget_authorized_knowledge_ids(user_info)
+        authorized_kb_set = set(authorized_kb_ids)
+
+        # 3.5 向上溯源：将已授权节点的所有祖先节点也加入可访问集合（实现子节点向父节点放行）
+        from bisheng.knowledge.domain.models.knowledge import Knowledge
+        accessible_kb_set = set(authorized_kb_set)
+        current_layer = list(authorized_kb_set)
+        while current_layer:
+            async with get_async_db_session() as session:
+                res = await session.execute(select(Knowledge).where(col(Knowledge.id).in_(current_layer)))
+                kbs = res.scalars().all()
+            parent_ids = [kb.parent_id for kb in kbs if kb.parent_id is not None and kb.parent_id not in accessible_kb_set]
+            accessible_kb_set.update(parent_ids)
+            current_layer = parent_ids
+
+        authorized_file_ids = []
+        for file in all_files:
+            # 4. 上传者/创建者默认放行
+            if file.user_id == user_info.user_id:
+                authorized_file_ids.append(file.id)
+                continue
+                
+            # 5. 先检查文档级独立权限 (最高优先级)
+            doc_rules = access_map.get(file.id, [])
+            if doc_rules:
+                matched = False
+                for rule in doc_rules:
+                    if rule.subject_type == "user" and rule.subject_id == user_id_str:
+                        matched = True
+                        break
+                    elif rule.subject_type == "org" and int(rule.subject_id) in accessible_kb_set:
+                        matched = True
+                        break
+                if matched:
+                    authorized_file_ids.append(file.id)
+                # 存在文档级权限且匹配失败，则直接拦截，不继承知识库权限
+                continue
+
+            # 6. 若文档未配置独立权限，回退检查知识库级别继承权限
+            target_kb_id = file.org_kb_id if file.org_kb_id is not None else file.knowledge_id
+            if target_kb_id in accessible_kb_set:
+                authorized_file_ids.append(file.id)
+
+        return authorized_file_ids
+
+    @classmethod
+    def get_authorized_file_ids(cls, user_info, knowledge_id: int) -> List[int]:
+        """
+        同步版本：根据文档独立权限与四级知识库继承规则，计算当前用户在此知识库下有权访问的所有文件 ID 集合。
+        """
+        from bisheng.user.domain.models.user_role import UserRoleDao
+        from bisheng.knowledge.domain.models.knowledge import KnowledgeDao
+        
+        # 1. 超级管理员拥有全部权限
+        role_list = UserRoleDao.get_user_roles(user_info.user_id)
+        is_admin = any(role.role_id == 1 for role in role_list) if role_list else False
+        
+        # 查询该知识库下所有正常状态的文件 (2 代表 SUCCESS)
+        with get_sync_db_session() as session:
+            all_files = session.exec(
+                select(KnowledgeFile).where(
+                    KnowledgeFile.knowledge_id == knowledge_id,
+                    KnowledgeFile.status == 2
+                )
+            ).all()
+            
+        if is_admin:
+            return [f.id for f in all_files]
+
+        user_id_str = str(user_info.user_id)
+        
+        # 2. 获取该知识库下所有文件已配置的独立文档级权限
+        file_ids = [f.id for f in all_files]
+        if not file_ids:
+            return []
+            
+        with get_sync_db_session() as session:
+            stmt = select(DocumentAccess).where(col(DocumentAccess.file_id).in_(file_ids))
+            db_access = session.exec(stmt).all()
+            
+        access_map = {}
+        for acc in db_access:
+            access_map.setdefault(acc.file_id, []).append(acc)
+
+        # 3. 获取用户基于 org_knowledge_ids 和四级知识库继承规则 被授权的全部知识库节点集合
+        authorized_kb_ids = KnowledgeDao.get_authorized_knowledge_ids(user_info)
+        authorized_kb_set = set(authorized_kb_ids)
+
+        # 3.5 向上溯源：将已授权节点的所有祖先节点也加入可访问集合（实现子节点向父节点放行）
+        from bisheng.knowledge.domain.models.knowledge import Knowledge
+        accessible_kb_set = set(authorized_kb_set)
+        current_layer = list(authorized_kb_set)
+        while current_layer:
+            with get_sync_db_session() as session:
+                kbs = session.exec(select(Knowledge).where(col(Knowledge.id).in_(current_layer))).all()
+            parent_ids = [kb.parent_id for kb in kbs if kb.parent_id is not None and kb.parent_id not in accessible_kb_set]
+            accessible_kb_set.update(parent_ids)
+            current_layer = parent_ids
+
+        authorized_file_ids = []
+        for file in all_files:
+            # 4. 上传者/创建者默认放行
+            if file.user_id == user_info.user_id:
+                authorized_file_ids.append(file.id)
+                continue
+                
+            # 5. 先检查文档级独立权限 (最高优先级)
+            doc_rules = access_map.get(file.id, [])
+            if doc_rules:
+                matched = False
+                for rule in doc_rules:
+                    if rule.subject_type == "user" and rule.subject_id == user_id_str:
+                        matched = True
+                        break
+                    elif rule.subject_type == "org" and int(rule.subject_id) in accessible_kb_set:
+                        matched = True
+                        break
+                if matched:
+                    authorized_file_ids.append(file.id)
+                # 存在文档级权限且匹配失败，则直接拦截，不继承知识库权限
+                continue
+
+            # 6. 若文档未配置独立权限，回退检查知识库级别继承权限
+            target_kb_id = file.org_kb_id if file.org_kb_id is not None else file.knowledge_id
+            if target_kb_id in accessible_kb_set:
+                authorized_file_ids.append(file.id)
+
+        return authorized_file_ids
+
 
 class QAKnoweldgeDao(QAKnowledgeBase):
 
@@ -725,5 +903,8 @@ class QAKnoweldgeDao(QAKnowledgeBase):
         with get_sync_db_session() as session:
             session.exec(statement)
             session.commit()
+
+
+
 
 # ─── Space Folder / File helpers (Space-scoped operations on KnowledgeFile) ──

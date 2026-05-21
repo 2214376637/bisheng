@@ -330,30 +330,30 @@ class KnowledgeSpaceChatService:
 
         vector_retriever, es_retriever = None, None
 
+        # 计算当前用户有权访问的文件白名单
+        authorized_file_ids = await KnowledgeFileDao.aget_authorized_file_ids(self.login_user, knowledge_id)
         if target_file_ids is None:
-            # Query the whole space
-            milvus_vector = await KnowledgeRag.init_knowledge_milvus_vectorstore(self.login_user.user_id,
-                                                                                 knowledge=space)
-            es_vector = await KnowledgeRag.init_knowledge_es_vectorstore(knowledge=space)
-            vector_retriever = milvus_vector.as_retriever(search_kwargs={
-                "k": 100,
-                "param": {"ef": 110}
-            })
-            es_retriever = es_vector.as_retriever(search_kwargs={"k": 100})
-        elif target_file_ids:
-            # Query specific files
-            milvus_vector = await KnowledgeRag.init_knowledge_milvus_vectorstore(self.login_user.user_id,
-                                                                                 knowledge=space)
-            es_vector = await KnowledgeRag.init_knowledge_es_vectorstore(knowledge=space)
-            vector_retriever = milvus_vector.as_retriever(search_kwargs={
-                "k": 100,
-                "param": {"ef": 110},
-                "expr": f"document_id in {target_file_ids}"
-            })
-            es_retriever = es_vector.as_retriever(search_kwargs={
-                "k": 100,
-                "filter": [{"terms": {"metadata.document_id": target_file_ids}}]
-            })
+            target_file_ids = authorized_file_ids
+        else:
+            target_file_ids = list(set(target_file_ids) & set(authorized_file_ids))
+
+        if not target_file_ids:
+            target_file_ids = [-1]
+
+        # 始终使用特定文件过滤检索
+        milvus_vector = await KnowledgeRag.init_knowledge_milvus_vectorstore(self.login_user.user_id,
+                                                                             knowledge=space)
+        es_vector = await KnowledgeRag.init_knowledge_es_vectorstore(knowledge=space)
+        vector_retriever = milvus_vector.as_retriever(search_kwargs={
+            "k": 100,
+            "param": {"ef": 110},
+            "expr": f"document_id in {target_file_ids}"
+        })
+        es_retriever = es_vector.as_retriever(search_kwargs={
+            "k": 100,
+            "filter": [{"terms": {"metadata.document_id": target_file_ids}}]
+        })
+
 
         # executeQuery(vector_retriever, es_retriever, query)
         async for one in self.space_rag(session, vector_retriever, es_retriever, query, tags):

@@ -66,6 +66,7 @@ class SpaceFileDao(KnowledgeFileDao):
             file_status: List[int] = None,
             page: int = 1,
             page_size: int = 20,
+            authorized_file_ids: List[int] = None,
     ) -> List[KnowledgeFile]:
         """
         Async: List direct children (folders first, then files) under a given parent.
@@ -83,6 +84,11 @@ class SpaceFileDao(KnowledgeFileDao):
 
         path_filter = KnowledgeFile.file_level_path == exact_path
         filters = [KnowledgeFile.knowledge_id == knowledge_id, path_filter]
+
+        if authorized_file_ids is not None:
+            ids_list = authorized_file_ids if authorized_file_ids else [-1]
+            filters.append(or_(KnowledgeFile.file_type == 0, col(KnowledgeFile.id).in_(ids_list)))
+
 
         if file_status:
             from sqlalchemy.orm import aliased
@@ -156,6 +162,7 @@ class SpaceFileDao(KnowledgeFileDao):
             knowledge_id: int,
             parent_id: Optional[int],
             file_status: List[int] = None,
+            authorized_file_ids: List[int] = None,
     ) -> int:
         """
         Async: Count direct children under a given parent.
@@ -172,6 +179,11 @@ class SpaceFileDao(KnowledgeFileDao):
 
         path_filter = KnowledgeFile.file_level_path == exact_path
         filters = [KnowledgeFile.knowledge_id == knowledge_id, path_filter]
+
+        if authorized_file_ids is not None:
+            ids_list = authorized_file_ids if authorized_file_ids else [-1]
+            filters.append(or_(KnowledgeFile.file_type == 0, col(KnowledgeFile.id).in_(ids_list)))
+
 
         if file_status:
             from sqlalchemy.orm import aliased
