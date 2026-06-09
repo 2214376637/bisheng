@@ -12,6 +12,7 @@ import Roles from "./components/Roles";
 import Theme from "./theme";
 import UserGroups from "./components/UserGroup";
 import Users from "./components/Users";
+import OrgManagement from "./components/OrgManagement";
 
 export default function index() {
     const { user } = useContext(userContext);
@@ -24,6 +25,7 @@ export default function index() {
                 <TabsTrigger value="user" className="roundedrounded-xl">{t('system.userManagement')}</TabsTrigger>
                 {user.role === 'admin' && <TabsTrigger value="userGroup">{t('system.userGroupsM')}</TabsTrigger>}
                 <TabsTrigger value="role">{t('system.roleManagement')}</TabsTrigger>
+                {user.role === 'admin' && <TabsTrigger value="org">机构管理</TabsTrigger>}
                 {user.role === 'admin' && <TabsTrigger value="system">{t('system.systemConfiguration')}</TabsTrigger>}
                 {user.role === 'admin' && <TabsTrigger value="theme">{t('system.themeColor')}</TabsTrigger>}
             </TabsList>
@@ -35,6 +37,9 @@ export default function index() {
             </TabsContent>
             <TabsContent value="role">
                 <Roles></Roles>
+            </TabsContent>
+            <TabsContent value="org">
+                <OrgManagement />
             </TabsContent>
             <TabsContent value="system">
                 <Config></Config>

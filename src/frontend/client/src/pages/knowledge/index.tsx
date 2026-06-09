@@ -420,6 +420,7 @@ export default function Knowledge() {
                     description: form.description,
                     auth_type,
                     is_released,
+                    org_node_id: form.orgNodeId,
                 });
                 if (activeSpace?.id === updated.id) setActiveSpace({ ...updated, role: activeSpace.role });
                 queryClient.invalidateQueries({ queryKey: ["knowledgeSpaces"] });
@@ -431,6 +432,7 @@ export default function Knowledge() {
                     description: form.description,
                     auth_type,
                     is_released,
+                    org_node_id: form.orgNodeId,
                 });
                 setActiveSpace(newSpace);
 

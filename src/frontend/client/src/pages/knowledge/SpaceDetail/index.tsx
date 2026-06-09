@@ -7,6 +7,7 @@ import { ALLOWED_EXTENSIONS, DEFAULT_MAX_FILE_SIZE_MB, triggerUrlDownload } from
 import { bishengConfState } from "~/pages/appChat/store/atoms";
 import { SearchParams } from "./CompoundSearchInput";
 import { EditTagsModal } from "./EditTagsModal";
+import { DocumentPermissionsDialog } from "./DocumentPermissionsDialog";
 import { FileCard } from "./FileCard";
 import { FileTable } from "./FileTable";
 import { KnowledgeSpaceHeader } from "./KnowledgeSpaceHeader";
@@ -95,6 +96,7 @@ export function KnowledgeSpaceContent({
     const [sortDirection, setSortDirection] = useState<SortDirection | undefined>(undefined);
     const [editingTagsFileId, setEditingTagsFileId] = useState<string | null>(null);
     const [isBatchTagging, setIsBatchTagging] = useState(false);
+    const [permDialogFile, setPermDialogFile] = useState<{ id: string; name: string } | null>(null);
 
     // Card view: compute columns by *container width* (not viewport width).
     // Thresholds (container width):
@@ -287,8 +289,11 @@ export function KnowledgeSpaceContent({
                 if (!url) { showToast({ message: localize("com_knowledge.get_download_link_failed"), status: "error" }); return; }
                 triggerUrlDownload(url, `${file?.name ?? "folder"}.zip`);
             } else {
-                // Single file: use preview_url for channel files, original_url for others
                 const previewData = await getFilePreviewApi(String(space.id), fileId);
+                if (!previewData.can_download && !previewData.original_url) {
+                    showToast({ message: localize("com_knowledge.no_download_permission"), status: "error" });
+                    return;
+                }
                 const downloadUrl = file?.fileSource === 'channel'
                     ? previewData.preview_url || previewData.original_url
                     : previewData.original_url;
@@ -536,6 +541,7 @@ export function KnowledgeSpaceContent({
                                         onPreview={handlePreviewFile}
                                         onValidateName={(newName) => validateFileName(newName, file.type === FileType.FOLDER, file.id, !!file.isCreating)}
                                         onCancelCreate={onCancelCreateFolder}
+                                        onConfigurePermissions={(id, name) => setPermDialogFile({ id, name })}
                                     />
                                 ))}
                             </div>
@@ -557,6 +563,7 @@ export function KnowledgeSpaceContent({
                                     onPreview={(id) => handlePreviewFile(id)}
                                     onValidateName={validateFileName}
                                     onCancelCreate={onCancelCreateFolder}
+                                    onConfigurePermissions={(id, name) => setPermDialogFile({ id, name })}
                                     sortBy={sortBy}
                                     sortDirection={sortDirection}
                                     onSort={handleSort}
@@ -605,6 +612,17 @@ export function KnowledgeSpaceContent({
                         : []
                 }
             />
+
+            {/* Document Permissions Dialog */}
+            {permDialogFile && (
+                <DocumentPermissionsDialog
+                    isOpen={!!permDialogFile}
+                    onClose={() => setPermDialogFile(null)}
+                    spaceId={space.id}
+                    fileId={permDialogFile.id}
+                    fileName={permDialogFile.name}
+                />
+            )}
         </div>
     );
 }

@@ -185,11 +185,11 @@ export async function getRolePermissionsApi(
 /**
  * 更新角色基本信息
  */
-export async function updateRoleNameApi(roleId, name,knowledgeSpaceFileLimit) {
+export async function updateRoleNameApi(roleId, name, knowledgeSpaceFileLimit) {
   return axios.patch(`/api/v1/role/${roleId}`, {
     role_name: name,
     remark: "手动创建用户",
-    knowledge_space_file_limit:knowledgeSpaceFileLimit
+    knowledge_space_file_limit: knowledgeSpaceFileLimit
   });
 }
 
@@ -308,4 +308,44 @@ export async function loggedChangePasswordApi(password, new_password): Promise<a
     password,
     new_password
   })
+}
+
+// 获取用户职务列表
+export async function getUserPositionsApi(userId: number): Promise<{ data: any[] }> {
+  return axios.get(`/api/v1/user/${userId}/position`);
+}
+
+// 设置用户职务列表
+export async function setUserPositionsApi(userId: number, positions: { kb_node_id: number; position_name: string }[]) {
+  return axios.post(`/api/v1/user/position`, {
+    user_id: userId,
+    positions: positions
+  });
+}
+
+// 获取组织架构树
+export async function getOrgNodeTreeApi(): Promise<{ data: any[] }> {
+  return axios.get(`/api/v1/knowledge/org-tree`);
+}
+
+// 创建机构节点（超管专用）
+export async function createOrgNodeApi(data: {
+  name: string;
+  description?: string;
+  parent_id?: number | null;
+}): Promise<any> {
+  return axios.post(`/api/v1/knowledge/org-node`, data);
+}
+
+// 修改机构节点名称/描述（超管专用）
+export async function updateOrgNodeApi(nodeId: number, data: {
+  name?: string;
+  description?: string;
+}): Promise<any> {
+  return axios.put(`/api/v1/knowledge/org-node/${nodeId}`, data);
+}
+
+// 删除机构节点（超管专用）
+export async function deleteOrgNodeApi(nodeId: number): Promise<any> {
+  return axios.delete(`/api/v1/knowledge/org-node/${nodeId}`);
 }

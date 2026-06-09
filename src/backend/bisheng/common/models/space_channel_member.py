@@ -180,6 +180,21 @@ class SpaceChannelMemberDao:
             return result.first()
 
     @classmethod
+    def get_active_member_role_sync(cls, space_id: int, user_id: int) -> Optional[UserRoleEnum]:
+        """ Sync: Return the role of an ACTIVE member, or None if not an active member.
+        Use this in synchronous code paths to avoid async/sync context conflicts. """
+
+        statement = select(SpaceChannelMember.user_role).where(
+            SpaceChannelMember.business_id == str(space_id),
+            SpaceChannelMember.business_type == BusinessTypeEnum.SPACE,
+            SpaceChannelMember.user_id == user_id,
+            SpaceChannelMember.status == MembershipStatusEnum.ACTIVE,
+        )
+        with get_sync_db_session() as session:
+            result = session.exec(statement)
+            return result.first()
+
+    @classmethod
     async def async_count_user_space_subscriptions(cls, user_id: int) -> int:
         """ Async: Count how many spaces the user has actively subscribed to (non-creator) """
 
@@ -397,6 +412,21 @@ class SpaceChannelMemberDao:
                     SpaceChannelMember.business_id == str(space_id),
                     SpaceChannelMember.business_type == BusinessTypeEnum.SPACE,
                     SpaceChannelMember.status == MembershipStatusEnum.REJECTED,
+                )
+            )
+            await session.commit()
+
+    @classmethod
+    async def async_delete_regular_members(cls, space_id: int):
+        """ Async: Remove all MEMBER-role members from a space (keep CREATOR and ADMIN).
+        Used when switching a space to CREATOR_ADMIN visibility. """
+
+        async with get_async_db_session() as session:
+            await session.exec(
+                delete(SpaceChannelMember).where(
+                    SpaceChannelMember.business_id == str(space_id),
+                    SpaceChannelMember.business_type == BusinessTypeEnum.SPACE,
+                    SpaceChannelMember.user_role == UserRoleEnum.MEMBER,
                 )
             )
             await session.commit()

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import * as RadioGroup from "@radix-ui/react-radio-group";
+import * as Select from "@radix-ui/react-select";
+import { ChevronDown, Building2 } from "lucide-react";
 import { NotificationSeverity } from "~/common";
 import { useConfirm, useToastContext } from "~/Providers";
 import { Button } from "~/components/ui/Button";
@@ -13,7 +15,7 @@ import {
 } from "~/components/ui/Sheet";
 import { Textarea } from "~/components/ui/Textarea";
 import { useLocalize } from "~/hooks";
-import { KnowledgeSpace, VisibilityType } from "~/api/knowledge";
+import { KnowledgeSpace, VisibilityType, OrgNode, getOrgNodeTreeApi } from "~/api/knowledge";
 import { cn, getFullWidthLength, truncateByFullWidth } from "~/utils";
 import { ChannelSuccessIcon } from "~/components/icons/channels";
 
@@ -37,6 +39,7 @@ export interface CreateKnowledgeSpaceFormData {
     description: string;
     joinPolicy: JoinPolicy;
     publishToSquare: PublishToSquare;
+    orgNodeId?: number | null;
 }
 
 interface CreateKnowledgeSpaceDrawerProps {
@@ -47,6 +50,14 @@ interface CreateKnowledgeSpaceDrawerProps {
     onManageMembers?: () => void;
     mode?: "create" | "edit";
     editingSpace?: KnowledgeSpace | null;
+}
+
+/** 将 OrgNode[] 平铺为带层级缩进的选项列表 */
+function flattenOrgNodes(nodes: OrgNode[], depth = 0): Array<OrgNode & { depth: number }> {
+    return nodes.flatMap(n => [
+        { ...n, depth },
+        ...flattenOrgNodes(n.children || [], depth + 1),
+    ]);
 }
 
 export function CreateKnowledgeSpaceDrawer({
@@ -66,7 +77,10 @@ export function CreateKnowledgeSpaceDrawer({
     const [joinPolicy, setJoinPolicy] = useState<JoinPolicy>("review");
     const [publishToSquare, setPublishToSquare] = useState<PublishToSquare>("yes");
     const [showSuccess, setShowSuccess] = useState(false);
-    /** Skip max-length enforcement while IME is composing (e.g. Chinese pinyin), so intermediate input is not mistaken as overflow. */
+    const [orgNodeId, setOrgNodeId] = useState<number | null>(null);
+    const [orgNodes, setOrgNodes] = useState<Array<OrgNode & { depth: number }>>([]);
+    const [orgLoading, setOrgLoading] = useState(false);
+    /** Skip max-length enforcement while IME is composing (e.g. Chinese pinyin) */
     const nameComposingRef = useRef(false);
     const descComposingRef = useRef(false);
 
@@ -74,6 +88,17 @@ export function CreateKnowledgeSpaceDrawer({
         () => joinPolicy === "review" || joinPolicy === "public",
         [joinPolicy]
     );
+    const isPublic = joinPolicy === "public";
+
+    // Load org node tree when drawer opens
+    useEffect(() => {
+        if (!open) return;
+        setOrgLoading(true);
+        getOrgNodeTreeApi()
+            .then(tree => setOrgNodes(flattenOrgNodes(tree)))
+            .catch(() => setOrgNodes([]))
+            .finally(() => setOrgLoading(false));
+    }, [open]);
 
     const resetForm = () => {
         setName("");
@@ -81,6 +106,7 @@ export function CreateKnowledgeSpaceDrawer({
         setJoinPolicy("review");
         setPublishToSquare("yes");
         setShowSuccess(false);
+        setOrgNodeId(null);
     };
 
     // Pre-fill form in edit mode
@@ -92,7 +118,6 @@ export function CreateKnowledgeSpaceDrawer({
         if (mode === "edit" && editingSpace) {
             setName(editingSpace.name || "");
             setDescription(editingSpace.description || "");
-            // Map visibility back to joinPolicy
             setJoinPolicy(
                 editingSpace.visibility === VisibilityType.PUBLIC
                     ? "public"
@@ -101,9 +126,15 @@ export function CreateKnowledgeSpaceDrawer({
                         : "review"
             );
             setPublishToSquare(editingSpace.isReleased ? "yes" : "no");
+            setOrgNodeId(editingSpace.orgNodeId ?? null);
             setShowSuccess(false);
         }
     }, [open, mode, editingSpace]);
+
+    // Auto-clear org binding when switching to public
+    useEffect(() => {
+        if (isPublic) setOrgNodeId(null);
+    }, [isPublic]);
 
     const handleConfirm = () => {
         if (!name.trim()) {
@@ -117,22 +148,31 @@ export function CreateKnowledgeSpaceDrawer({
             name: name.trim(),
             description: description.trim(),
             joinPolicy,
-            publishToSquare: needPublishOption ? publishToSquare : "no"
+            publishToSquare: needPublishOption ? publishToSquare : "no",
+            orgNodeId: isPublic ? null : orgNodeId,
         };
         onConfirm?.(payload);
-        // Only show success page in create mode
         if (mode === "create") {
             setShowSuccess(true);
         } else {
             onOpenChange(false);
         }
     };
+
+    // Display name of currently selected org node
+    const selectedNodeName = useMemo(() => {
+        if (!orgNodeId) return null;
+        return orgNodes.find(n => n.id === orgNodeId)?.name ?? String(orgNodeId);
+    }, [orgNodeId, orgNodes]);
+
     return (
         <Sheet open={open} onOpenChange={onOpenChange}>
             <SheetContent side="right" className="min-w-[1000px] p-0 bg-white">
                 <SheetHeader className="px-8 pt-7 pb-4 border-b border-[#E5E6EB]">
                     <SheetTitle className="text-[20px] font-medium text-[#1D2129] leading-none">
-                        {mode === "edit" ? localize("com_subscription.edit_knowledge_space") || localize("com_knowledge.edit_space") : localize("com_subscription.create_konwledge_space")}
+                        {mode === "edit"
+                            ? localize("com_subscription.edit_knowledge_space") || localize("com_knowledge.edit_space")
+                            : localize("com_subscription.create_konwledge_space")}
                     </SheetTitle>
                 </SheetHeader>
 
@@ -147,19 +187,13 @@ export function CreateKnowledgeSpaceDrawer({
                                 <Button
                                     variant="secondary"
                                     className="inline-flex h-8 min-w-[100px] items-center justify-center rounded-[6px] border border-[#165DFF] bg-white px-4 text-[14px] font-normal leading-none text-[#165DFF] hover:bg-[#E8F3FF]"
-                                    onClick={() => {
-                                        onViewSpace?.();
-                                        onOpenChange(false);
-                                    }}
+                                    onClick={() => { onViewSpace?.(); onOpenChange(false); }}
                                 >
                                     {localize("com_subscription.goto_knowledge_space")}
                                 </Button>
                                 <Button
                                     className="inline-flex h-8 min-w-[100px] items-center justify-center rounded-[6px] bg-[#165DFF] px-4 text-[14px] font-normal leading-none text-white hover:bg-[#4080FF]"
-                                    onClick={() => {
-                                        onManageMembers?.();
-                                        onOpenChange(false);
-                                    }}
+                                    onClick={() => { onManageMembers?.(); onOpenChange(false); }}
                                 >
                                     {localize("com_subscription.member_management")}
                                 </Button>
@@ -178,35 +212,22 @@ export function CreateKnowledgeSpaceDrawer({
                                 <div className="relative flex items-center gap-2">
                                     <Input
                                         value={name}
-                                        onCompositionStart={() => {
-                                            nameComposingRef.current = true;
-                                        }}
+                                        onCompositionStart={() => { nameComposingRef.current = true; }}
                                         onCompositionEnd={(e) => {
                                             nameComposingRef.current = false;
                                             const v = e.currentTarget.value;
                                             if (getFullWidthLength(v) > MAX_SPACE_NAME) {
-                                                showToast({
-                                                    message: localize("com_subscription.max_knowledge_space_name") || localize("com_knowledge.max_20_chars"),
-                                                    severity: NotificationSeverity.WARNING
-                                                });
+                                                showToast({ message: localize("com_subscription.max_knowledge_space_name") || localize("com_knowledge.max_20_chars"), severity: NotificationSeverity.WARNING });
                                                 setName(truncateByFullWidth(v, MAX_SPACE_NAME));
                                             }
                                         }}
                                         onChange={(e) => {
                                             const v = e.target.value;
-                                            if (nameComposingRef.current) {
-                                                setName(v);
-                                                return;
-                                            }
+                                            if (nameComposingRef.current) { setName(v); return; }
                                             if (getFullWidthLength(v) > MAX_SPACE_NAME) {
-                                                showToast({
-                                                    message: localize("com_subscription.max_knowledge_space_name") || localize("com_knowledge.max_20_chars"),
-                                                    severity: NotificationSeverity.WARNING
-                                                });
+                                                showToast({ message: localize("com_subscription.max_knowledge_space_name") || localize("com_knowledge.max_20_chars"), severity: NotificationSeverity.WARNING });
                                                 setName(truncateByFullWidth(v, MAX_SPACE_NAME));
-                                            } else {
-                                                setName(v);
-                                            }
+                                            } else { setName(v); }
                                         }}
                                         placeholder={localize("com_subscription.enter_knowledge_space_name")}
                                         className="h-11 border-[#E5E6EB] text-[14px] pr-16 bg-[#fff]"
@@ -222,43 +243,28 @@ export function CreateKnowledgeSpaceDrawer({
                                 <Label className="text-sm text-[#1D2129] font-medium">
                                     {localize("description")}
                                 </Label>
-                                <div>
-                                    <Textarea
-                                        value={description}
-                                        onCompositionStart={() => {
-                                            descComposingRef.current = true;
-                                        }}
-                                        onCompositionEnd={(e) => {
-                                            descComposingRef.current = false;
-                                            const v = e.currentTarget.value;
-                                            if (getFullWidthLength(v) > MAX_SPACE_DESC) {
-                                                showToast({
-                                                    message: localize("com_subscription.max_knowledge_space_desc") || localize("com_knowledge.max_200_chars"),
-                                                    severity: NotificationSeverity.WARNING
-                                                });
-                                                setDescription(truncateByFullWidth(v, MAX_SPACE_DESC));
-                                            }
-                                        }}
-                                        onChange={(e) => {
-                                            const v = e.target.value;
-                                            if (descComposingRef.current) {
-                                                setDescription(v);
-                                                return;
-                                            }
-                                            if (getFullWidthLength(v) > MAX_SPACE_DESC) {
-                                                showToast({
-                                                    message: localize("com_subscription.max_knowledge_space_desc") || localize("com_knowledge.max_200_chars"),
-                                                    severity: NotificationSeverity.WARNING
-                                                });
-                                                setDescription(truncateByFullWidth(v, MAX_SPACE_DESC));
-                                            } else {
-                                                setDescription(v);
-                                            }
-                                        }}
-                                        placeholder={localize("com_subscription.enter_knowledge_space_description")}
-                                        className="min-h-[104px] rounded-[6px] border-[#E5E6EB] bg-[#fff] text-[14px]"
-                                    />
-                                </div>
+                                <Textarea
+                                    value={description}
+                                    onCompositionStart={() => { descComposingRef.current = true; }}
+                                    onCompositionEnd={(e) => {
+                                        descComposingRef.current = false;
+                                        const v = e.currentTarget.value;
+                                        if (getFullWidthLength(v) > MAX_SPACE_DESC) {
+                                            showToast({ message: localize("com_subscription.max_knowledge_space_desc") || localize("com_knowledge.max_200_chars"), severity: NotificationSeverity.WARNING });
+                                            setDescription(truncateByFullWidth(v, MAX_SPACE_DESC));
+                                        }
+                                    }}
+                                    onChange={(e) => {
+                                        const v = e.target.value;
+                                        if (descComposingRef.current) { setDescription(v); return; }
+                                        if (getFullWidthLength(v) > MAX_SPACE_DESC) {
+                                            showToast({ message: localize("com_subscription.max_knowledge_space_desc") || localize("com_knowledge.max_200_chars"), severity: NotificationSeverity.WARNING });
+                                            setDescription(truncateByFullWidth(v, MAX_SPACE_DESC));
+                                        } else { setDescription(v); }
+                                    }}
+                                    placeholder={localize("com_subscription.enter_knowledge_space_description")}
+                                    className="min-h-[104px] rounded-[6px] border-[#E5E6EB] bg-[#fff] text-[14px]"
+                                />
                             </div>
 
                             {/* 权限设置 */}
@@ -283,26 +289,11 @@ export function CreateKnowledgeSpaceDrawer({
                                     className="flex flex-col gap-3"
                                 >
                                     {[
-                                        {
-                                            value: "private",
-                                            label: localize("com_subscription.private"),
-                                            desc: localize("com_subscription.cannot_subscribe")
-                                        },
-                                        {
-                                            value: "review",
-                                            label: localize("com_subscription.approval_required"),
-                                            desc: localize("com_subscription.require_approval")
-                                        },
-                                        {
-                                            value: "public",
-                                            label: localize("publice"),
-                                            desc: localize("com_subscription.anyone_can_subscribe") || localize("com_knowledge.direct_subscribe_desc")
-                                        }
+                                        { value: "private", label: localize("com_subscription.private"), desc: localize("com_subscription.cannot_subscribe") },
+                                        { value: "review", label: localize("com_subscription.approval_required"), desc: localize("com_subscription.require_approval") },
+                                        { value: "public", label: localize("publice"), desc: localize("com_subscription.anyone_can_subscribe") || localize("com_knowledge.direct_subscribe_desc") }
                                     ].map((opt) => (
-                                        <label
-                                            key={opt.value}
-                                            className="flex items-start gap-2 cursor-pointer"
-                                        >
+                                        <label key={opt.value} className="flex items-start gap-2 cursor-pointer">
                                             <RadioGroup.Item
                                                 value={opt.value}
                                                 className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-[#E5E6EB] bg-white data-[state=checked]:bg-[#165DFF] data-[state=checked]:border-[#165DFF]"
@@ -310,19 +301,87 @@ export function CreateKnowledgeSpaceDrawer({
                                                 <RadioGroup.Indicator className="h-1.5 w-1.5 rounded-full bg-white" />
                                             </RadioGroup.Item>
                                             <div className="flex flex-wrap items-baseline gap-x-2">
-                                                <span
-                                                    className={PERMISSION_OPTION_TEXT_CLASS}
-                                                    style={PERMISSION_OPTION_FONT}
-                                                >
+                                                <span className={PERMISSION_OPTION_TEXT_CLASS} style={PERMISSION_OPTION_FONT}>
                                                     {opt.label}
                                                 </span>
-                                                <span className={FORM_HINT_TEXT_CLASS}>
-                                                    {opt.desc}
-                                                </span>
+                                                <span className={FORM_HINT_TEXT_CLASS}>{opt.desc}</span>
                                             </div>
                                         </label>
                                     ))}
                                 </RadioGroup.Root>
+                            </div>
+
+                            {/* 组织归属（权限等级绑定） */}
+                            <div className="space-y-2">
+                                <Label className={cn("text-sm font-medium flex items-center gap-1.5", isPublic ? "text-[#C9CDD4]" : "text-[#1D2129]")}>
+                                    <Building2 className="size-4 shrink-0" />
+                                    组织归属
+                                    <span className={cn("text-[13px] font-normal", isPublic ? "text-[#C9CDD4]" : "text-[#999999]")}>
+                                        {isPublic ? "（公开空间无需配置）" : "（选填，限定可访问的组织范围）"}
+                                    </span>
+                                </Label>
+
+                                <Select.Root
+                                    value={orgNodeId ? String(orgNodeId) : "none"}
+                                    onValueChange={(v) => setOrgNodeId(v === "none" ? null : Number(v))}
+                                    disabled={isPublic}
+                                >
+                                    <Select.Trigger
+                                        className={cn(
+                                            "flex h-11 w-full items-center justify-between rounded-[6px] border px-3 text-[14px] outline-none transition-colors",
+                                            isPublic
+                                                ? "border-[#E5E6EB] bg-[#F7F8FA] text-[#C9CDD4] cursor-not-allowed"
+                                                : "border-[#E5E6EB] bg-white text-[#1D2129] hover:border-[#165DFF] focus:border-[#165DFF]"
+                                        )}
+                                    >
+                                        <div className="flex items-center gap-2 min-w-0">
+                                            <Building2 className={cn("size-4 shrink-0", isPublic ? "text-[#C9CDD4]" : "text-[#86909C]")} />
+                                            <Select.Value placeholder="不限制（所有符合权限的成员均可访问）">
+                                                {selectedNodeName ?? "不限制（所有符合权限的成员均可访问）"}
+                                            </Select.Value>
+                                        </div>
+                                        <Select.Icon>
+                                            <ChevronDown className={cn("size-4 shrink-0", isPublic ? "text-[#C9CDD4]" : "text-[#86909C]")} />
+                                        </Select.Icon>
+                                    </Select.Trigger>
+
+                                    <Select.Portal>
+                                        <Select.Content
+                                            className="z-50 min-w-[var(--radix-select-trigger-width)] max-h-[300px] overflow-auto rounded-[8px] border border-[#E5E6EB] bg-white shadow-lg"
+                                            position="popper"
+                                            sideOffset={4}
+                                        >
+                                            <Select.Viewport className="p-1">
+                                                <Select.Item
+                                                    value="none"
+                                                    className="flex h-9 cursor-pointer items-center rounded-[4px] px-3 text-[14px] text-[#86909C] outline-none hover:bg-[#F2F3F5] data-[highlighted]:bg-[#F2F3F5]"
+                                                >
+                                                    <Select.ItemText>不限制</Select.ItemText>
+                                                </Select.Item>
+
+                                                {orgLoading ? (
+                                                    <div className="px-3 py-2 text-[14px] text-[#86909C]">加载中...</div>
+                                                ) : orgNodes.length === 0 ? (
+                                                    <div className="px-3 py-2 text-[14px] text-[#86909C]">暂无可用组织节点</div>
+                                                ) : (
+                                                    orgNodes.map(node => (
+                                                        <Select.Item
+                                                            key={node.id}
+                                                            value={String(node.id)}
+                                                            className="flex h-9 cursor-pointer items-center rounded-[4px] text-[14px] text-[#1D2129] outline-none hover:bg-[#F2F3F5] data-[highlighted]:bg-[#F2F3F5] data-[state=checked]:bg-[#E8F3FF] data-[state=checked]:text-[#165DFF]"
+                                                            style={{ paddingLeft: `${12 + node.depth * 16}px`, paddingRight: "12px" }}
+                                                        >
+                                                            <Select.ItemText>
+                                                                {node.depth > 0 && <span className="text-[#C9CDD4] mr-1">└─</span>}
+                                                                {node.name}
+                                                            </Select.ItemText>
+                                                        </Select.Item>
+                                                    ))
+                                                )}
+                                            </Select.Viewport>
+                                        </Select.Content>
+                                    </Select.Portal>
+                                </Select.Root>
                             </div>
 
                             {/* 是否发布到知识广场 */}
@@ -330,8 +389,10 @@ export function CreateKnowledgeSpaceDrawer({
                                 <div className="space-y-3">
                                     <Label className="text-[14px] text-[#1D2129]">
                                         <span className="text-[#F53F3F]">*</span>
-                                        {localize("com_knowledge.publish_to_square")}<span className={cn("ml-2", FORM_HINT_TEXT_CLASS)}>
-                                            {localize("com_knowledge.publish_desc")}</span>
+                                        {localize("com_knowledge.publish_to_square")}
+                                        <span className={cn("ml-2", FORM_HINT_TEXT_CLASS)}>
+                                            {localize("com_knowledge.publish_desc")}
+                                        </span>
                                     </Label>
                                     <RadioGroup.Root
                                         value={publishToSquare}
@@ -339,19 +400,13 @@ export function CreateKnowledgeSpaceDrawer({
                                         className="flex gap-6"
                                     >
                                         <label className="flex items-center gap-2 cursor-pointer">
-                                            <RadioGroup.Item
-                                                value="yes"
-                                                className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-[#E5E6EB] bg-white data-[state=checked]:bg-[#165DFF] data-[state=checked]:border-[#165DFF]"
-                                            >
+                                            <RadioGroup.Item value="yes" className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-[#E5E6EB] bg-white data-[state=checked]:bg-[#165DFF] data-[state=checked]:border-[#165DFF]">
                                                 <RadioGroup.Indicator className="h-1.5 w-1.5 rounded-full bg-white" />
                                             </RadioGroup.Item>
                                             <span className="text-[14px] text-[#1D2129]">{localize("com_knowledge.yes")}</span>
                                         </label>
                                         <label className="flex items-center gap-2 cursor-pointer">
-                                            <RadioGroup.Item
-                                                value="no"
-                                                className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-[#E5E6EB] bg-white data-[state=checked]:bg-[#165DFF] data-[state=checked]:border-[#165DFF]"
-                                            >
+                                            <RadioGroup.Item value="no" className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-[#E5E6EB] bg-white data-[state=checked]:bg-[#165DFF] data-[state=checked]:border-[#165DFF]">
                                                 <RadioGroup.Indicator className="h-1.5 w-1.5 rounded-full bg-white" />
                                             </RadioGroup.Item>
                                             <span className="text-[14px] text-[#1D2129]">{localize("com_knowledge.no")}</span>
@@ -370,7 +425,8 @@ export function CreateKnowledgeSpaceDrawer({
                             className="h-8 rounded-[6px] border border-[#E5E6EB] bg-white text-[14px] font-normal text-[#4E5969]"
                             onClick={() => onOpenChange(false)}
                         >
-                            {localize("com_knowledge.cancel")}</Button>
+                            {localize("com_knowledge.cancel")}
+                        </Button>
                         <Button
                             className="h-8 rounded-[6px] bg-[#165DFF] hover:bg-[#4080FF] text-[14px] font-normal text-white"
                             onClick={handleConfirm}
@@ -383,4 +439,3 @@ export function CreateKnowledgeSpaceDrawer({
         </Sheet>
     );
 }
-

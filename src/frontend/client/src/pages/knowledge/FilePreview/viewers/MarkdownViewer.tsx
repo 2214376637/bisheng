@@ -11,7 +11,7 @@ interface MarkdownViewerProps {
 
 export function MarkdownViewer({ fileUrl, zoomLevel }: MarkdownViewerProps) {
     const localize = useLocalize();
-  const [content, setContent] = useState("");
+    const [content, setContent] = useState("");
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
@@ -19,7 +19,7 @@ export function MarkdownViewer({ fileUrl, zoomLevel }: MarkdownViewerProps) {
         const fetchMarkdown = async () => {
             try {
                 setLoading(true);
-                const response = await fetch(fileUrl);
+                const response = await fetch(fileUrl, { credentials: "include" });
                 if (!response.ok) throw new Error(localize("com_knowledge.failure_status", { 0: response.status }));
                 const text = await response.text();
                 setContent(text);

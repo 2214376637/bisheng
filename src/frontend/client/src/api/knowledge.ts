@@ -41,11 +41,13 @@ export enum FileType {
     OTHER = "other"
 }
 
-/** Space visibility / auth type */
+/** Space visibility / auth type — 与空间设置三档一致：public / approval / private */
 export enum VisibilityType {
     PUBLIC = "public",
     PRIVATE = "private",
-    APPROVAL = "approval"
+    APPROVAL = "approval",
+    /** 后端遗留值，前端空间设置 UI 未暴露 */
+    CREATOR_ADMIN = "creator_admin",
 }
 
 /** Sort field */
@@ -97,6 +99,8 @@ export interface KnowledgeSpace {
     updatedAt: string;            // mapped from update_time
     tags: string[];
     isReleased: boolean;          // mapped from is_released
+    /** 绑定的组织节点知识库 ID，None 表示不限定组织范围 */
+    orgNodeId?: number | null;
 
     // Used only by the "square explore" UI
     isFollowed?: boolean;
@@ -151,6 +155,12 @@ export interface KnowledgeFile {
     fileSource?: string;
     /** Path of the existing duplicate file (when status is DUPLICATE) */
     oldFileLevelPath?: string;
+    /** Current user's permission level on this file: 'read' | 'write' | 'admin' | null */
+    permission?: "read" | "write" | "admin" | null;
+    /** Whether the document is private (only uploader + whitelist can access) */
+    isPrivate?: boolean;
+    /** Uploader user id */
+    userId?: string;
     // Transient UI-only fields
     isCreating?: boolean;
 }
@@ -265,6 +275,7 @@ function mapSpace(raw: RawKnowledgeSpace): KnowledgeSpace {
         isReleased: raw.is_released ?? false,
         isPending: raw.is_pending ?? false,
         isFollowed: raw.is_followed ?? false,
+        orgNodeId: (raw as any).org_node_id ?? null,
         // Some detail endpoints may carry subscription_status; keep it if present.
         subscriptionStatus:
             (raw as any).subscription_status ??
@@ -361,6 +372,9 @@ function mapChild(raw: any, spaceId: string): KnowledgeFile {
         fileNum: raw?.file_num !== undefined ? Number(raw.file_num) : undefined,
         fileSource: raw?.file_source,
         oldFileLevelPath: raw?.old_file_level_path,
+        permission: raw?.permission ?? null,
+        isPrivate: Boolean(raw?.is_private),
+        userId: raw?.user_id != null ? String(raw.user_id) : undefined,
     };
 }
 
@@ -480,6 +494,17 @@ export async function getManagedSpacesApi(params?: {
     });
     return (res?.data || []).map(mapSpace);
 }
+
+/**
+ * Get spaces that the current user is NOT a member of but can access
+ * because they contain at least one document with "all-users-readable" permission.
+ * Embodies the "document permission > space permission" principle at the navigation layer.
+ */
+export async function getAccessibleSpacesApi(): Promise<KnowledgeSpace[]> {
+    const res = await request.get<ApiResponse<RawKnowledgeSpace[]>>(`/api/v1/knowledge/space/accessible`);
+    return (res?.data || []).map(mapSpace);
+}
+
 
 /**
  * Get public knowledge square (paginated)
@@ -635,6 +660,7 @@ export async function createSpaceApi(data: {
     icon?: string;
     auth_type: string;
     is_released?: boolean;
+    org_node_id?: number | null;
 }): Promise<KnowledgeSpace> {
     const res = await request.post(`/api/v1/knowledge/space`, data) as ApiResponse<RawKnowledgeSpace>;
     return mapSpace({ ...res.data, user_role: SpaceRole.CREATOR });
@@ -651,6 +677,7 @@ export async function updateSpaceApi(
         icon?: string;
         auth_type?: string;
         is_released?: boolean;
+        org_node_id?: number | null;
     }
 ): Promise<KnowledgeSpace> {
     if (!space_id) throw new Error("space_id is required");
@@ -732,6 +759,14 @@ export async function removeSpaceMemberApi(space_id: string, user_id: number): P
     await request.deleteWithOptions(`/api/v1/knowledge/space/${space_id}/members`, {
         data: { user_id },
     });
+}
+
+/** Add a user to a knowledge space (system super admin or space creator/admin) */
+export async function addSpaceMemberApi(
+    space_id: string,
+    body: { user_id: number; role?: "admin" | "member" }
+): Promise<void> {
+    await request.post(`/api/v1/knowledge/space/${space_id}/members`, body);
 }
 
 /**
@@ -1097,12 +1132,104 @@ export async function batchRetryApi(
 export async function getFilePreviewApi(
     space_id: string,
     file_id: string
-): Promise<{ original_url: string; preview_url: string }> {
+): Promise<{ original_url: string; preview_url: string; can_download?: boolean; file_ext?: string }> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const res = await request.get<any>(`/api/v1/knowledge/space/${space_id}/files/${file_id}/preview`);
     const data = res?.data ?? res;
     return {
         original_url: data?.original_url ?? "",
         preview_url: data?.preview_url ?? "",
+        can_download: data?.can_download ?? Boolean(data?.original_url),
+        file_ext: data?.file_ext ?? "",
     };
+}
+
+// ─────────────────────────────────────────────
+// API functions — Document permissions (D-04 / D-06)
+// ─────────────────────────────────────────────
+
+export interface PermissionRule {
+    id?: number;
+    subject_type: "all" | "user" | "org";
+    subject_id: string;
+    subject_name?: string;
+    permission_type: "read" | "write" | "admin";
+}
+
+export interface FilePermissionsResp {
+    is_private: boolean;
+    rules: PermissionRule[];
+    my_permission: "read" | "write" | "admin" | null;
+}
+
+export interface PermissionCandidate {
+    subject_type: "all" | "user" | "org";
+    subject_id: string;
+    subject_name: string;
+}
+
+/**
+ * Get permission configuration for a file.
+ * GET /api/v1/knowledge/space/{space_id}/files/{file_id}/permissions
+ */
+export async function getFilePermissionsApi(
+    space_id: string,
+    file_id: string
+): Promise<FilePermissionsResp> {
+    const res = await request.get<ApiResponse<FilePermissionsResp>>(
+        `/api/v1/knowledge/space/${space_id}/files/${file_id}/permissions`
+    );
+    return res?.data ?? { is_private: false, rules: [], my_permission: null };
+}
+
+/**
+ * Save permission configuration for a file (full replace).
+ * POST /api/v1/knowledge/space/{space_id}/files/{file_id}/permissions
+ */
+export async function saveFilePermissionsApi(
+    space_id: string,
+    file_id: string,
+    payload: { is_private: boolean; rules: Omit<PermissionRule, "id" | "subject_name">[] }
+): Promise<void> {
+    await request.post(
+        `/api/v1/knowledge/space/${space_id}/files/${file_id}/permissions`,
+        payload
+    );
+}
+
+/**
+ * Search candidates for permission grant (users + org nodes).
+ * GET /api/v1/knowledge/space/{space_id}/permissions/candidates
+ */
+export async function getPermissionCandidatesApi(
+    space_id: string,
+    keyword?: string
+): Promise<PermissionCandidate[]> {
+    const res = await request.get<ApiResponse<PermissionCandidate[]>>(
+        `/api/v1/knowledge/space/${space_id}/permissions/candidates`,
+        { params: { keyword } }
+    );
+    return res?.data ?? [];
+}
+
+// ─────────────────────────────────────────────
+// 组织节点树 API（用于知识空间等级绑定）
+// ─────────────────────────────────────────────
+
+/** 组织节点树节点（四级知识库层级，type=NORMAL） */
+export interface OrgNode {
+    id: number;
+    name: string;
+    level: number;       // 0=学校 1=学院 2=系 3=班级
+    parent_id: number | null;
+    children?: OrgNode[];
+}
+
+/**
+ * 获取四级机构知识库节点树，供空间创建/编辑时选择组织归属。
+ * GET /api/v1/knowledge/org-tree
+ */
+export async function getOrgNodeTreeApi(): Promise<OrgNode[]> {
+    const res = await request.get<ApiResponse<OrgNode[]>>(`/api/v1/knowledge/org-tree`);
+    return res?.data ?? [];
 }

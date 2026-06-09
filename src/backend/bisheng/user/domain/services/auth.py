@@ -97,6 +97,7 @@ class LoginUser(BaseModel):
     user_name: str = Field(default="")
     user_role: List[int] = Field(default_factory=list, description="Users GroupsIDVertical")
     group_cache: Dict[int, Any] = Field(default_factory=dict, description="User Group Cache")
+    org_knowledge_ids: List[int] = Field(default_factory=list, description="Organization Knowledge Base Node IDs")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -109,6 +110,20 @@ class LoginUser(BaseModel):
             self.user_role = []
             user_role = UserRoleDao.get_user_roles(self.user_id)
             self.user_role = [user_role.role_id for user_role in user_role]
+
+        # 从数据库加载用户的组织职务节点（org_knowledge_ids）
+        # 非超管用户必须持有至少一个节点；超管不受限制，不需要加载。
+        if not self.org_knowledge_ids and not self._is_admin_role():
+            from bisheng.user.domain.models.user import UserDao
+            user_db = UserDao.get_user(self.user_id)
+            if user_db and user_db.org_knowledge_ids:
+                self.org_knowledge_ids = list(user_db.org_knowledge_ids)
+
+    def _is_admin_role(self) -> bool:
+        """内部用：仅检查 user_role 列表，避免循环调用 cached_property。"""
+        if isinstance(self.user_role, list):
+            return AdminRole in self.user_role
+        return False
 
     @cached_property
     def _check_admin(self):

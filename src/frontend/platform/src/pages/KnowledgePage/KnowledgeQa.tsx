@@ -13,6 +13,7 @@ import Tip from "@/components/bs-ui/tooltip/tip";
 import { userContext } from "@/contexts/userContext";
 import { copyQaDatabase, createFileLib, deleteFileLib, readFileLibDatabase, updateKnowledge } from "@/controllers/API";
 import { getKnowledgeModelConfig } from "@/controllers/API/finetune";
+import { getOrgNodeTreeApi } from "@/controllers/API/user";
 import { captureAndAlertRequestErrorHoc } from "@/controllers/request";
 import { ModelSelect } from "@/pages/ModelPage/manage/tabs/WorkbenchModel";
 import { useTable } from "@/util/hook";
@@ -37,6 +38,8 @@ function CreateModal({ datalist, open, onOpenChange, onLoadEnd, mode = 'create',
     const nameRef = useRef(null)
     const descRef = useRef(null)
     const [modelId, setModelId] = useState('')
+    const [orgNodeId, setOrgNodeId] = useState<number | null>(null)
+    const [orgNodes, setOrgNodes] = useState<{ value: number; label: string }[]>([])
 
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [isModelChanged, setIsModelChanged] = useState(false)
@@ -53,15 +56,29 @@ function CreateModal({ datalist, open, onOpenChange, onLoadEnd, mode = 'create',
                     setModelId(config.embedding_model_id);
                 } else {
                     setModelId(currentLib.model);
+                    setOrgNodeId(currentLib.org_node_id || null);
                 }
 
                 if (mode === 'edit' && currentLib) {
-                    // Use setTimeout to ensure DOM has been rendered
                     setTimeout(() => {
                         if (nameRef.current) nameRef.current.value = currentLib.name || '';
                         if (descRef.current) descRef.current.value = currentLib.description || '';
                     }, 0);
                 }
+
+                // 加载机构树
+                getOrgNodeTreeApi().then(res => {
+                    const flatten = (nodes: any[], result: any[] = []) => {
+                        nodes.forEach(n => {
+                            const prefix = '\u00a0'.repeat((n.level || 0) * 4);
+                            result.push({ value: n.id, label: prefix + n.name });
+                            if (n.children?.length) flatten(n.children, result);
+                        });
+                        return result;
+                    };
+                    const rawData = Array.isArray(res) ? res : (res?.data || []);
+                    setOrgNodes(flatten(rawData));
+                });
             } catch (error) {
                 console.error('Failed to load model data:', error);
                 toast({ variant: "error", description: t('loadModelError') });
@@ -74,6 +91,7 @@ function CreateModal({ datalist, open, onOpenChange, onLoadEnd, mode = 'create',
     useEffect(() => {
         if (!open) {
             setModelId('');
+            setOrgNodeId(null);
             setIsSubmitting(false);
             setIsModelChanged(false);
         }
@@ -122,7 +140,8 @@ function CreateModal({ datalist, open, onOpenChange, onLoadEnd, mode = 'create',
                     name,
                     description: desc,
                     model: modelId,
-                    type: 1
+                    type: 1,
+                    ...(orgNodeId ? { org_node_id: orgNodeId } : {}),
                 }).then((res) => {
                     window.libname = [name, desc];
                     navigate(isImport ? `/filelib/qalib/upload/${res.id}` : `/filelib/qalib/${res.id}`);
@@ -137,18 +156,16 @@ function CreateModal({ datalist, open, onOpenChange, onLoadEnd, mode = 'create',
                     model_type: "embedding",
                     knowledge_id: currentLib.id,
                     knowledge_name: name,
-                    description: desc
+                    description: desc,
+                    org_node_id: orgNodeId
                 });
                 toast({ variant: "success", description: t('updateSuccess') });
                 onOpenChange(false);
                 onLoadEnd();
             }
-        } catch (error) {
-            if (error) {
-                toast({ variant: "error", description: error || t('operationFailed') });
-            } else {
-                toast({ variant: "error", description: mode === 'create' ? t('createFailed') : t('updateFailed') });
-            }
+        } catch (error: any) {
+            const errMsg = typeof error === 'string' ? error : (error?.message || t('operationFailed'));
+            toast({ variant: "error", description: errMsg });
         } finally {
             setIsSubmitting(false);
         }
@@ -223,6 +240,31 @@ function CreateModal({ datalist, open, onOpenChange, onLoadEnd, mode = 'create',
                                 {t('embeddingModelWarning')}
                             </p>
                         )}
+                    </div>
+                    {/* 机构归属 */}
+                    <div className="">
+                        <label className="bisheng-label">机构归属
+                            <span className="ml-1 text-xs text-gray-400 font-normal">（可选）</span>
+                        </label>
+                        <Select
+                            value={orgNodeId ? String(orgNodeId) : '__none__'}
+                            onValueChange={val => setOrgNodeId(val === '__none__' ? null : Number(val))}
+                        >
+                            <SelectTrigger className="mt-1">
+                                {orgNodeId
+                                    ? orgNodes.find(o => o.value === orgNodeId)?.label || '已选机构'
+                                    : '不限制（所有人可见）'
+                                }
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="__none__" showIcon={false}>不限制（所有人可见）</SelectItem>
+                                {orgNodes.map(o => (
+                                    <SelectItem key={o.value} value={String(o.value)} showIcon={false}>
+                                        {o.label}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
                     </div>
                 </div>
                 <DialogFooter>

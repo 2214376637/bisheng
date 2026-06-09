@@ -37,7 +37,8 @@ from bisheng.knowledge.domain.models.knowledge_file import (
 from bisheng.knowledge.domain.models.knowledge_space_file import SpaceFileDao
 from bisheng.knowledge.domain.schemas.knowledge_space_schema import (
     KnowledgeSpaceInfoResp, SpaceMemberResponse, SpaceMemberPageResponse,
-    UpdateSpaceMemberRoleRequest, RemoveSpaceMemberRequest, SpaceSubscriptionStatusEnum, KnowledgeSpaceFileResponse
+    UpdateSpaceMemberRoleRequest, RemoveSpaceMemberRequest, AddSpaceMemberRequest,
+    SpaceSubscriptionStatusEnum, KnowledgeSpaceFileResponse
 )
 from bisheng.knowledge.domain.services.knowledge_audit_telemetry_service import KnowledgeAuditTelemetryService
 from bisheng.knowledge.domain.services.knowledge_service import KnowledgeService
@@ -129,6 +130,15 @@ class KnowledgeSpaceService(KnowledgeUtils):
             raise SpacePermissionDeniedError()
         return role
 
+    async def _is_system_super_admin(self) -> bool:
+        roles = await UserRoleDao.aget_user_roles(self.login_user.user_id)
+        return any(r.role_id == 1 for r in roles) if roles else False
+
+    async def _require_write_or_super_admin(self, space_id: int) -> None:
+        if await self._is_system_super_admin():
+            return
+        await self._require_write_permission(space_id)
+
     async def _require_read_permission(self, space_id: int) -> Knowledge:
         space = await KnowledgeDao.aquery_by_id(space_id)
         if not space or space.type != KnowledgeTypeEnum.SPACE.value:
@@ -139,8 +149,36 @@ class KnowledgeSpaceService(KnowledgeUtils):
             space_id, self.login_user.user_id
         )
         if not role:
+            # 文档级权限救济通道：
+            # 虽然用户不是该空间的成员，但如果空间内存在配置了"对所有人公开"规则的文档，
+            # 仍允许用户进入空间。具体能访问哪些文件由 aget_authorized_file_ids 精确控制。
+            has_public_doc = await self._space_has_public_doc(space_id)
+            if not has_public_doc:
+                raise SpacePermissionDeniedError()
+            return space
+        # CREATOR_ADMIN 空间：只有 CREATOR / ADMIN 可访问，普通 MEMBER 拦截
+        if space.auth_type == AuthTypeEnum.CREATOR_ADMIN and role not in self._WRITE_ROLES:
             raise SpacePermissionDeniedError()
         return space
+
+    @staticmethod
+    async def _space_has_public_doc(space_id: int) -> bool:
+        """检查该空间内是否存在配置了"所有人可读"文档级权限规则的文档。"""
+        from bisheng.knowledge.domain.models.knowledge_file import KnowledgeFile, DocumentAccess
+        from sqlmodel import select
+        stmt = (
+            select(DocumentAccess.id)
+            .join(KnowledgeFile, DocumentAccess.file_id == KnowledgeFile.id)
+            .where(
+                KnowledgeFile.knowledge_id == space_id,
+                KnowledgeFile.status == 2,
+                DocumentAccess.subject_type == "all",
+            )
+            .limit(1)
+        )
+        async with get_async_db_session() as session:
+            result = await session.exec(stmt)
+            return result.first() is not None
 
     # ──────────────────────────── Space CRUD ──────────────────────────────────
 
@@ -151,6 +189,7 @@ class KnowledgeSpaceService(KnowledgeUtils):
             icon: Optional[str] = None,
             auth_type: AuthTypeEnum = AuthTypeEnum.PUBLIC,
             is_released: bool = False,
+            org_node_id: Optional[int] = None,
     ) -> Knowledge:
         """ Create a new knowledge space (max 30 per user). """
 
@@ -162,6 +201,15 @@ class KnowledgeSpaceService(KnowledgeUtils):
         if not workbench_llm or not workbench_llm.embedding_model:
             raise WorkbenchEmbeddingError()
 
+        # 公开空间无需绑定组织节点
+        if auth_type == AuthTypeEnum.PUBLIC:
+            org_node_id = None
+        elif org_node_id is not None:
+            # 校验组织节点存在且类型正确
+            node = KnowledgeDao.query_by_id(org_node_id)
+            if not node or node.type != KnowledgeTypeEnum.NORMAL.value:
+                raise ValueError(f"无效的组织节点 ID={org_node_id}，必须是 type=NORMAL 的知识库节点")
+
         db_knowledge = Knowledge(
             name=name,
             description=description,
@@ -170,6 +218,7 @@ class KnowledgeSpaceService(KnowledgeUtils):
             type=KnowledgeTypeEnum.SPACE.value,
             model=workbench_llm.embedding_model.id,
             is_released=is_released,
+            org_node_id=org_node_id,
         )
 
         knowledge_space = KnowledgeService.create_knowledge_base(self.request, self.login_user, db_knowledge,
@@ -183,6 +232,14 @@ class KnowledgeSpaceService(KnowledgeUtils):
             status=MembershipStatusEnum.ACTIVE,
         )
         await SpaceChannelMemberDao.async_insert_member(member)
+
+        # 若绑定了机构节点，将节点下的职务成员自动同步到该空间
+        if org_node_id:
+            await self._sync_org_members_to_space(
+                space_id=knowledge_space.id,
+                org_node_id=org_node_id,
+                exclude_user_ids=[self.login_user.user_id],  # 创建者已作为 CREATOR 写入，跳过
+            )
 
         # Audit log for knowledge space creation
         await KnowledgeAuditTelemetryService.audit_create_knowledge_space(self.login_user, self.request,
@@ -248,6 +305,7 @@ class KnowledgeSpaceService(KnowledgeUtils):
             icon: Optional[str] = None,
             auth_type: Optional[AuthTypeEnum] = None,
             is_released: bool = False,
+            org_node_id: Optional[int] = None,
     ) -> Knowledge:
         """ Modify an existing knowledge space. """
         space = await KnowledgeDao.aquery_by_id(space_id)
@@ -268,6 +326,19 @@ class KnowledgeSpaceService(KnowledgeUtils):
             space.auth_type = auth_type
         space.is_released = is_released
 
+        # 公开空间自动清除组织节点绑定
+        resolved_auth = auth_type if auth_type is not None else space.auth_type
+        if resolved_auth == AuthTypeEnum.PUBLIC:
+            space.org_node_id = None
+        elif org_node_id is not None:
+            node = KnowledgeDao.query_by_id(org_node_id)
+            if not node or node.type != KnowledgeTypeEnum.NORMAL.value:
+                raise ValueError(f"无效的组织节点 ID={org_node_id}，必须是 type=NORMAL 的知识库节点")
+            space.org_node_id = org_node_id
+        else:
+            # org_node_id 未传入时保持原有绑定不变
+            pass
+
         space = await KnowledgeDao.async_update_space(space)
 
         # When switching to PRIVATE, remove all non-creator members
@@ -275,8 +346,72 @@ class KnowledgeSpaceService(KnowledgeUtils):
             await SpaceChannelMemberDao.async_delete_non_creator_members(space_id)
         elif old_auth_type == AuthTypeEnum.APPROVAL and auth_type == AuthTypeEnum.PUBLIC:
             await SpaceChannelMemberDao.async_delete_rejected_members(space_id)
+        elif auth_type == AuthTypeEnum.CREATOR_ADMIN:
+            # 切换到 CREATOR_ADMIN：移除所有普通 MEMBER，只保留 CREATOR / ADMIN
+            await SpaceChannelMemberDao.async_delete_regular_members(space_id)
+
+        # 若本次操作绑定/更新了机构节点，将节点下的职务成员增量同步到空间成员列表
+        if org_node_id is not None and resolved_auth != AuthTypeEnum.PUBLIC:
+            await self._sync_org_members_to_space(
+                space_id=space_id,
+                org_node_id=org_node_id,
+            )
 
         return space
+
+    async def _sync_org_members_to_space(
+            self,
+            space_id: int,
+            org_node_id: int,
+            exclude_user_ids: Optional[List[int]] = None,
+    ) -> None:
+        """
+        将机构节点（org_node_id）下所有持有该节点职务的用户批量同步到知识空间成员列表。
+
+        策略：
+        - 幂等式同步：对已是 ACTIVE 成员的用户直接跳过，不重复插入。
+        - 仅写入 MEMBER 角色，不覆盖 CREATOR / ADMIN 的已有角色。
+        - exclude_user_ids 中的用户 ID 将被跳过（用于排除创建者自身）。
+        """
+        from bisheng.user.domain.models.user_position import UserPositionDao
+
+        exclude_ids = set(exclude_user_ids or [])
+
+        # 1. 查询该机构节点下所有持有职务的用户 ID
+        org_user_ids = await UserPositionDao.aget_users_by_kb_node(org_node_id)
+        if not org_user_ids:
+            logger.info(f"[sync_org_members] org_node_id={org_node_id} 下暂无职务成员，跳过同步")
+            return
+
+        # 2. 查询该空间当前所有活跃成员，构建快速查找集合
+        existing_members = await SpaceChannelMemberDao.async_get_members_by_space(space_id)
+        existing_user_ids = {m.user_id for m in existing_members}
+
+        # 3. 计算需要新增的用户（差集），并逐一写入
+        new_user_ids = [
+            uid for uid in org_user_ids
+            if uid not in existing_user_ids and uid not in exclude_ids
+        ]
+
+        if not new_user_ids:
+            logger.info(f"[sync_org_members] space_id={space_id} 节点成员均已是空间成员，无需同步")
+            return
+
+        for uid in new_user_ids:
+            try:
+                member = SpaceChannelMember(
+                    business_id=str(space_id),
+                    business_type=BusinessTypeEnum.SPACE,
+                    user_id=uid,
+                    user_role=UserRoleEnum.MEMBER,
+                    status=MembershipStatusEnum.ACTIVE,
+                )
+                await SpaceChannelMemberDao.async_insert_member(member)
+            except Exception as e:
+                # 忽略重复键等非致命异常，保证整体同步不中断
+                logger.warning(f"[sync_org_members] 插入成员 user_id={uid} 至 space_id={space_id} 时出错（已跳过）: {e}")
+
+        logger.info(f"[sync_org_members] space_id={space_id} 已同步 {len(new_user_ids)} 名机构成员")
 
     # ──────────────────────────── Listings ────────────────────────────────────
 
@@ -340,6 +475,64 @@ class KnowledgeSpaceService(KnowledgeUtils):
         # Fetch members ordered by is_pinned DESC so we know which are pinned
         members = await SpaceChannelMemberDao.async_get_user_followed_members(self.login_user.user_id)
         return await self._format_member_spaces(members, order_by)
+
+    async def get_accessible_spaces(self) -> List[KnowledgeRead]:
+        """
+        返回当前用户"虽非成员，但空间内存在对所有人公开的文档"的知识空间列表。
+        这是文档级权限优先于空间级权限原则在导航层的体现：
+        即使用户看不到私有空间，只要空间内有公开文档，就应该能在列表中发现它。
+        """
+        from bisheng.knowledge.domain.models.knowledge_file import KnowledgeFile, DocumentAccess
+        from bisheng.knowledge.domain.models.knowledge import Knowledge
+        from bisheng.common.models.space_channel_member import SpaceChannelMemberDao
+        from sqlmodel import select
+        from sqlalchemy import distinct
+
+        # 1. 查询所有含对所有人公开文档的空间 ID
+        stmt = (
+            select(distinct(KnowledgeFile.knowledge_id))
+            .join(DocumentAccess, DocumentAccess.file_id == KnowledgeFile.id)
+            .where(
+                DocumentAccess.subject_type == "all",
+                KnowledgeFile.status == 2,  # SUCCESS
+            )
+        )
+        async with get_async_db_session() as session:
+            result = await session.exec(stmt)
+            candidate_space_ids = result.all()
+
+        if not candidate_space_ids:
+            return []
+
+        # 2. 查询这些空间的元信息，过滤掉 PUBLIC 类型（PUBLIC 已在广场可见）
+        async with get_async_db_session() as session:
+            spaces_stmt = select(Knowledge).where(
+                Knowledge.id.in_(candidate_space_ids),
+                Knowledge.type == KnowledgeTypeEnum.SPACE.value,
+                Knowledge.auth_type != AuthTypeEnum.PUBLIC.value,
+            )
+            spaces = (await session.exec(spaces_stmt)).all()
+
+        if not spaces:
+            return []
+
+        # 3. 过滤掉用户已是成员的空间（已在 /joined 列表里，无需重复展示）
+        result_spaces = []
+        for space in spaces:
+            member = await SpaceChannelMemberDao.async_find_member(space.id, self.login_user.user_id)
+            if member is None:
+                result_spaces.append(space)
+
+        return [
+            KnowledgeSpaceInfoResp(
+                **space.model_dump(),
+                subscription_status=SpaceSubscriptionStatusEnum.NOT_SUBSCRIBED,
+                is_followed=False,
+            )
+            for space in result_spaces
+        ]
+
+
 
     async def pin_space(self, space_id: int, is_pinned: bool = True) -> bool:
         return await SpaceChannelMemberDao.pin_space_id(space_id, self.login_user.user_id, is_pinned)
@@ -470,6 +663,59 @@ class KnowledgeSpaceService(KnowledgeUtils):
             ))
 
         return SpaceMemberPageResponse(data=result_list, total=total)
+
+    async def add_space_member(self, req: AddSpaceMemberRequest) -> bool:
+        """
+        将用户加入知识空间。
+        系统超级管理员或空间 Creator/Admin 可操作。
+        """
+        await self._require_write_or_super_admin(req.space_id)
+
+        space = await KnowledgeDao.aquery_by_id(req.space_id)
+        if not space or space.type != KnowledgeTypeEnum.SPACE.value:
+            raise SpaceNotFoundError()
+
+        users = await UserDao.aget_user_by_ids([req.user_id])
+        if not users:
+            raise ValueError('目标用户不存在')
+
+        if space.auth_type == AuthTypeEnum.CREATOR_ADMIN and not await self._is_system_super_admin():
+            current_role = await SpaceChannelMemberDao.async_get_active_member_role(
+                req.space_id, self.login_user.user_id
+            )
+            if current_role not in self._WRITE_ROLES:
+                raise SpacePermissionDeniedError()
+
+        target_role = UserRoleEnum.ADMIN if req.role == 'admin' else UserRoleEnum.MEMBER
+        if target_role == UserRoleEnum.ADMIN:
+            current_admins = await SpaceChannelMemberDao.async_get_members_by_space(
+                space_id=req.space_id, user_roles=[UserRoleEnum.ADMIN]
+            )
+            if len(current_admins) >= 5:
+                raise ValueError('管理员数量已达上限')
+
+        existing = await SpaceChannelMemberDao.async_find_member(req.space_id, req.user_id)
+        if existing and existing.is_active and existing.user_role == UserRoleEnum.CREATOR:
+            raise ValueError('不能修改创建者成员关系')
+
+        status = MembershipStatusEnum.ACTIVE
+        if existing:
+            if existing.is_active and existing.user_role == target_role:
+                return True
+            existing.status = status
+            existing.user_role = target_role
+            await SpaceChannelMemberDao.update(existing)
+            return True
+
+        member = SpaceChannelMember(
+            business_id=str(req.space_id),
+            business_type=BusinessTypeEnum.SPACE,
+            user_id=req.user_id,
+            user_role=target_role,
+            status=status,
+        )
+        await SpaceChannelMemberDao.async_insert_member(member)
+        return True
 
     async def update_member_role(self, req: UpdateSpaceMemberRoleRequest) -> bool:
         """
@@ -660,6 +906,8 @@ class KnowledgeSpaceService(KnowledgeUtils):
             else:
                 item["thumbnails"] = self.get_logo_share_link(one.thumbnails)
                 item["tags"] = file_tags.get(one.id, [])
+            # 为每个条目（文件/文件夹）附加当前用户的权限级别
+            item["permission"] = await KnowledgeFileDao.aget_user_file_permission(self.login_user, one.id)
             result.append(item)
 
         return result
@@ -965,7 +1213,8 @@ class KnowledgeSpaceService(KnowledgeUtils):
                                                         ), split_rule=file_split_rule.model_dump(),
                                                         file_kwargs={"level": level,
                                                                      "file_level_path": file_level_path,
-                                                                     "file_source": file_source.value})
+                                                                     "file_source": file_source.value,
+                                                                     "is_private": True})
             if db_file.status != KnowledgeFileStatus.FAILED.value:
                 # Get a preview cache of this filekey
                 cache_key = self.get_preview_cache_key(
@@ -994,7 +1243,8 @@ class KnowledgeSpaceService(KnowledgeUtils):
         if not file_record or file_record.file_type != 1:
             raise SpaceFileNotFoundError()
 
-        await self._require_write_permission(file_record.knowledge_id)
+        # 改用文档级权限校验（D-06）
+        await KnowledgeFileDao.acheck_doc_permission(self.login_user.user_id, file_id, 'write')
 
         old_suffix = file_record.file_name.rsplit('.', 1)[-1] if '.' in file_record.file_name else ''
         new_suffix = new_name.rsplit('.', 1)[-1] if '.' in new_name else ''
@@ -1020,7 +1270,8 @@ class KnowledgeSpaceService(KnowledgeUtils):
         if not file_record or file_record.file_type != 1:
             raise SpaceFileNotFoundError()
 
-        await self._require_write_permission(file_record.knowledge_id)
+        # 改用文档级权限校验（D-06）
+        await KnowledgeFileDao.acheck_doc_permission(self.login_user.user_id, file_id, 'write')
 
         await KnowledgeFileDao.adelete_batch([file_id])
         delete_knowledge_file_celery.delay(file_ids=[file_id], knowledge_id=file_record.knowledge_id, clear_minio=True)
@@ -1032,14 +1283,52 @@ class KnowledgeSpaceService(KnowledgeUtils):
         if not file_record or file_record.file_type != 1:
             raise SpaceFileNotFoundError()
 
-        await self._require_read_permission(file_record.knowledge_id)
+        # 改用文档级权限校验，支持 D-04 跨空间文档公开场景（D-06）
+        await KnowledgeFileDao.acheck_doc_permission(self.login_user.user_id, file_id, 'read')
 
         original_url, preview_url = KnowledgeService.get_file_share_url(file_id)
+        if KnowledgeService.is_inline_previewable(file_record.file_name or ''):
+            # 内嵌预览走鉴权 API，避免 MinIO 预签名路径与 nginx 不一致导致 400
+            preview_url = KnowledgeService.build_inline_content_api_path(
+                file_record.knowledge_id, file_id
+            )
+        else:
+            preview_url = KnowledgeService.resolve_preview_url(file_record, original_url, preview_url)
+        perm = await KnowledgeFileDao.aget_user_file_permission(self.login_user, file_id)
+        can_download = perm in ('write', 'admin')
+
+        file_ext = ''
+        if file_record.file_name and '.' in file_record.file_name:
+            file_ext = file_record.file_name.rsplit('.', 1)[-1].lower()
 
         return {
-            "original_url": original_url,
+            "original_url": original_url if can_download else "",
             "preview_url": preview_url,
+            "can_download": can_download,
+            "file_ext": file_ext,
         }
+
+    async def open_file_content_stream(self, space_id: int, file_id: int):
+        """校验读权限后返回 (file_record, minio_stream_response)。"""
+        from bisheng.core.storage.minio.minio_manager import get_minio_storage_sync
+
+        file_record = await KnowledgeFileDao.query_by_id(file_id)
+        if not file_record or file_record.file_type != 1:
+            raise SpaceFileNotFoundError()
+        if file_record.knowledge_id != space_id:
+            raise SpaceFileNotFoundError()
+
+        await KnowledgeFileDao.acheck_doc_permission(self.login_user.user_id, file_id, 'read')
+
+        object_name = file_record.object_name
+        if not object_name:
+            raise SpaceFileNotFoundError()
+
+        minio = get_minio_storage_sync()
+        if not minio.object_exists_sync(object_name=object_name):
+            raise SpaceFileNotFoundError()
+
+        return file_record, minio.download_object_sync(object_name=object_name)
 
     # ──────────────────────────── Tags ───────────────────────────────────
     async def get_space_tags(self, space_id: int) -> List[Tag]:
@@ -1071,7 +1360,8 @@ class KnowledgeSpaceService(KnowledgeUtils):
 
     async def update_file_tags(self, space_id: int, file_id: int, tag_ids: List[int]):
         """ 2：支持对单文件的标签管理: Overwrite tags for a single file. """
-        await self._require_write_permission(space_id)
+        # 改用文档级权限校验（D-06）
+        await KnowledgeFileDao.acheck_doc_permission(self.login_user.user_id, file_id, 'write')
 
         file_record = await KnowledgeFileDao.query_by_id(file_id)
         if not file_record or file_record.knowledge_id != space_id:
@@ -1095,6 +1385,7 @@ class KnowledgeSpaceService(KnowledgeUtils):
 
         resource_type = ResourceTypeEnum.SPACE_FILE
         for file_id in valid_file_ids:
+            await KnowledgeFileDao.acheck_doc_permission(self.login_user.user_id, file_id, 'write')
             await TagDao.add_tags(tag_ids, str(file_id), resource_type, self.login_user.user_id)
 
         await KnowledgeDao.async_update_knowledge_update_time_by_id(space_id)
@@ -1122,6 +1413,7 @@ class KnowledgeSpaceService(KnowledgeUtils):
         for db_file in db_files:
             if db_file.knowledge_id != space_id:
                 raise SpaceFileNotFoundError()
+            await KnowledgeFileDao.acheck_doc_permission(self.login_user.user_id, db_file.id, 'write')
 
         tmp, file_level_path = await self.process_retry_files(db_files, id2input, self.login_user)
 
@@ -1147,6 +1439,7 @@ class KnowledgeSpaceService(KnowledgeUtils):
             if file.knowledge_id != space_id:
                 continue
             if file.file_type == FileType.FILE.value and file.status == KnowledgeFileStatus.FAILED.value:
+                await KnowledgeFileDao.acheck_doc_permission(self.login_user.user_id, file.id, 'write')
                 retry_knowledge_file_celery.delay(file.id)
                 all_file_ids.append(file.id)
                 all_file_level_path.add(file.file_level_path)
@@ -1156,6 +1449,7 @@ class KnowledgeSpaceService(KnowledgeUtils):
                                                                              file_status=KnowledgeFileStatus.FAILED)
                 for item in all_failed_files:
                     if item.status == KnowledgeFileStatus.FAILED.value and item.file_type == FileType.FILE:
+                        await KnowledgeFileDao.acheck_doc_permission(self.login_user.user_id, item.id, 'write')
                         retry_knowledge_file_celery.delay(item.id)
                         all_file_ids.append(item.id)
                         all_file_level_path.add(file.file_level_path)
@@ -1179,6 +1473,7 @@ class KnowledgeSpaceService(KnowledgeUtils):
         if not knowledge:
             raise SpaceNotFoundError()
 
+        # 文件夹层面仍用空间写权限校验（文件夹没有独立权限级别）
         await self._require_write_permission(knowledge_id)
 
         for folder_id in folder_ids:
@@ -1187,6 +1482,9 @@ class KnowledgeSpaceService(KnowledgeUtils):
                 await self.delete_folder(knowledge.id, folder_id)
 
         if file_ids:
+            # 逐文件执行文档级写权限校验（D-06）
+            for fid in file_ids:
+                await KnowledgeFileDao.acheck_doc_permission(self.login_user.user_id, fid, 'write')
             await KnowledgeFileDao.adelete_batch(file_ids)
             delete_knowledge_file_celery.delay(file_ids=file_ids, knowledge_id=knowledge.id,
                                                clear_minio=True)
@@ -1222,6 +1520,16 @@ class KnowledgeSpaceService(KnowledgeUtils):
 
         # All KnowledgeFile objects this download touches
         all_records: List[KnowledgeFile] = direct_files + folder_db_records
+
+        # 按照文档级权限过滤（D-06）：只打包用户有编辑权限的文件（只读不可下载）
+        authorized_ids = set(await KnowledgeFileDao.aget_authorized_file_ids(self.login_user, space_id))
+        downloadable_ids = set()
+        for fid in authorized_ids:
+            perm = await KnowledgeFileDao.aget_user_file_permission(self.login_user, fid)
+            if perm in ('write', 'admin'):
+                downloadable_ids.add(fid)
+        all_records = [r for r in all_records
+                       if r.file_type == FileType.DIR.value or r.id in downloadable_ids]
 
         # ── 2. Build id→name map for every folder encountered ─────────────────
         #       We need this to translate '/7/42' → 'Reports/Q1'
@@ -1351,6 +1659,10 @@ class KnowledgeSpaceService(KnowledgeUtils):
             raise SpaceNotFoundError()
 
         if space.auth_type == AuthTypeEnum.PRIVATE:
+            raise SpaceSubscribePrivateError()
+
+        # CREATOR_ADMIN 空间：不允许普通用户订阅
+        if space.auth_type == AuthTypeEnum.CREATOR_ADMIN:
             raise SpaceSubscribePrivateError()
 
         target_status = (

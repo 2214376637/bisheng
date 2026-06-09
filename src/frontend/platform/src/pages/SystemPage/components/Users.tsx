@@ -25,6 +25,7 @@ import UserRoleModal from "./UserRoleModal";
 import UserPwdModal from "@/pages/LoginPage/UserPwdModal";
 import { PlusIcon } from "@/components/bs-icons";
 import CreateUser from "./CreateUser";
+import UserPositionModal from "./UserPositionModal";
 
 function UsersFilter({ options, onChecked, nameKey, placeholder, onFilter }) {
     const [open, setOpen] = useState(false)
@@ -113,6 +114,7 @@ export default function Users(params) {
 
     // 编辑
     const [currentUser, setCurrentUser] = useState(null)
+    const [currentPositionUser, setCurrentPositionUser] = useState(null)
     const userPwdModalRef = useRef(null)
     const handleRoleChange = () => {
         setCurrentUser(null)
@@ -160,6 +162,9 @@ export default function Users(params) {
         return <div>
             {/* 编辑 */}
             <Button variant="link" disabled={user.user_id === el.user_id} onClick={() => setCurrentUser(el)} className="px-0">{t('edit')}</Button>
+            {/* 职务配置 (仅超管可见) */}
+            {user.role === 'admin' &&
+                <Button variant="link" disabled={user.user_id === el.user_id} onClick={() => setCurrentPositionUser(el)} className="px-0 pl-4">{t('system.positionConfig', '职务配置')}</Button>}
             {/* 重置密码 */}
             {(user.role === 'admin' || user.role === 'group_admin') &&
                 <Button variant="link" className="px-0 pl-4" onClick={() => userPwdModalRef.current.open(el.user_id)}>{t('system.resetPwd')}</Button>}
@@ -223,12 +228,12 @@ export default function Users(params) {
                             <TableCell className="break-all">{(el.groups || []).map(el => el.name).join(',')}</TableCell>
                             <TableCell className="break-all">{(el.roles || []).map(el => el.name).join(',')}</TableCell>
                             <TableCell>{el.update_time.replace('T', ' ')}</TableCell>
-                            <TableCell 
-                                className="text-right" 
-                                style={{ 
+                            <TableCell
+                                className="text-right"
+                                style={{
                                     whiteSpace: 'nowrap',
                                 }}
-                                >
+                            >
                                 {operations(el)}
                             </TableCell>
                         </TableRow>
@@ -256,6 +261,7 @@ export default function Users(params) {
 
         <CreateUser open={openCreate} onClose={(bool) => { setOpenCreate(bool); reload() }} onSave={reload} />
         <UserRoleModal user={currentUser} onClose={() => setCurrentUser(null)} onChange={handleRoleChange}></UserRoleModal>
+        <UserPositionModal user={currentPositionUser} onClose={() => setCurrentPositionUser(null)} onChange={reload} />
         <UserPwdModal ref={userPwdModalRef} />
     </div>
 };

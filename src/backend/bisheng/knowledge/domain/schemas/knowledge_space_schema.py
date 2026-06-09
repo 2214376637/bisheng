@@ -21,6 +21,11 @@ class KnowledgeSpaceCreateReq(BaseModel):
     icon: Optional[str] = Field(None, description="Icon Object Name")
     auth_type: AuthTypeEnum = Field(AuthTypeEnum.PUBLIC, description="Authentication Type")
     is_released: bool = Field(default=False, description="Knowledge Space Status")
+    org_node_id: Optional[int] = Field(
+        None,
+        description="绑定的组织节点知识库 ID（type=NORMAL）。"
+                    "为 None 时表示不限定组织范围（公开空间应不配置）。"
+    )
 
 
 class KnowledgeSpaceInfoResp(KnowledgeBase):
@@ -45,6 +50,10 @@ class KnowledgeSpaceUpdateReq(BaseModel):
     icon: Optional[str] = Field(None, description="Icon Object Name")
     auth_type: Optional[AuthTypeEnum] = Field(None, description="Authentication Type")
     is_released: bool = Field(default=False, description="Knowledge Space Status")
+    org_node_id: Optional[int] = Field(
+        None,
+        description="绑定的组织节点知识库 ID。为 None 时清除绑定。"
+    )
 
 
 class FolderCreateReq(BaseModel):
@@ -124,6 +133,13 @@ class RemoveSpaceMemberRequest(BaseModel):
     """Remove Space Member Request"""
     space_id: int = Field(default=0, description='Space ID')
     user_id: int = Field(..., description='Target User ID to Remove')
+
+
+class AddSpaceMemberRequest(BaseModel):
+    """Add Space Member Request"""
+    space_id: int = Field(default=0, description='Space ID')
+    user_id: int = Field(..., description='Target User ID to Add')
+    role: Literal['admin', 'member'] = Field(default='member', description='Role: admin / member')
 
 
 class KnowledgeSpaceFileResponse(KnowledgeFileRead):

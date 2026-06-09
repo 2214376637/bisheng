@@ -5,6 +5,8 @@ from datetime import datetime
 from io import BytesIO
 from typing import Annotated, Dict, List, Optional
 
+from pydantic import BaseModel
+
 import rsa
 from captcha.image import ImageCaptcha
 from fastapi import APIRouter, Depends, HTTPException, Query, Body, Request, UploadFile, File
@@ -30,6 +32,7 @@ from bisheng.utils import get_request_ip
 from bisheng.utils.constants import CAPTCHA_PREFIX, RSA_KEY, USER_PASSWORD_ERROR, USER_CURRENT_SESSION
 from ..domain.models.user import User, UserCreate, UserDao, UserLogin, UserRead, UserUpdate
 from ..domain.models.user_role import UserRole, UserRoleCreate, UserRoleDao
+from ..domain.models.user_position import UserPosition, UserPositionDao
 from ..domain.services.auth import AuthJwt, LoginUser
 from ..domain.services.user import UserService
 from ...common.constants.enums.telemetry import BaseTelemetryTypeEnum
@@ -727,3 +730,120 @@ def md5_hash(string):
     md5 = hashlib.md5()
     md5.update(string.encode('utf-8'))
     return md5.hexdigest()
+
+
+# ──────────────────────── 用户职务管理 API ────────────────────────────────────
+
+class UserPositionItem(BaseModel):
+    """职务请求体中单条职务的格式。"""
+    kb_node_id: int
+    position_name: Optional[str] = None
+
+
+class SetUserPositionsReq(BaseModel):
+    """批量设置用户职务请求体。"""
+    user_id: int
+    positions: List[UserPositionItem]
+
+
+@router.post('/user/position', status_code=200)
+async def set_user_positions(
+        *,
+        req: SetUserPositionsReq,
+        login_user: LoginUser = Depends(LoginUser.get_login_user),
+):
+    """
+    超管为指定用户分配/覆盖职务（组织归属节点）。
+    positions 为空列表时，清空该用户全部职务。
+    """
+    if not login_user.is_admin():
+        raise HTTPException(status_code=403, detail='只有超级管理员有权分配用户职务')
+
+    # 校验目标用户存在
+    db_user = UserDao.get_user(req.user_id)
+    if not db_user:
+        raise HTTPException(status_code=404, detail='目标用户不存在')
+
+    # 校验每个 kb_node_id 有效性：必须是 type=NORMAL（0）的知识库节点
+    if req.positions:
+        from bisheng.knowledge.domain.models.knowledge import KnowledgeDao, KnowledgeTypeEnum
+        for item in req.positions:
+            node = KnowledgeDao.query_by_id(item.kb_node_id)
+            if not node or node.type != KnowledgeTypeEnum.NORMAL.value:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f'kb_node_id={item.kb_node_id} 无效，必须是 type=NORMAL（0）的知识库节点'
+                )
+
+    positions_dicts = [
+        {'kb_node_id': item.kb_node_id, 'position_name': item.position_name}
+        for item in req.positions
+    ]
+    result = await UserPositionDao.aset_user_positions(req.user_id, positions_dicts)
+    return resp_200(data=[p.model_dump() for p in result])
+
+
+@router.get('/user/{user_id}/position', status_code=200)
+async def get_user_positions(
+        user_id: int,
+        login_user: LoginUser = Depends(LoginUser.get_login_user),
+):
+    """
+    查询指定用户的职务列表。超管可查任意用户；普通用户只能查询自己。
+    """
+    if not login_user.is_admin() and login_user.user_id != user_id:
+        raise HTTPException(status_code=403, detail='无权查看该用户的职务信息')
+
+    positions = await UserPositionDao.aget_user_positions(user_id)
+
+    # 附加知识库节点名称，方便前端展示
+    result = []
+    for pos in positions:
+        from bisheng.knowledge.domain.models.knowledge import KnowledgeDao
+        node = KnowledgeDao.query_by_id(pos.kb_node_id)
+        result.append({
+            **pos.model_dump(),
+            'kb_node_name': node.name if node else str(pos.kb_node_id),
+        })
+
+    return resp_200(data=result)
+
+
+@router.delete('/user/position/{position_id}', status_code=200)
+async def delete_user_position(
+        position_id: int,
+        login_user: LoginUser = Depends(LoginUser.get_login_user),
+):
+    """
+    超管删除单条职务记录（同步更新 user.org_knowledge_ids）。
+    """
+    if not login_user.is_admin():
+        raise HTTPException(status_code=403, detail='只有超级管理员有权删除用户职务')
+
+    deleted = await UserPositionDao.adelete_position(position_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail='职务记录不存在')
+    return resp_200()
+
+
+@router.get('/knowledge/org-node/{kb_node_id}/members', status_code=200)
+async def get_kb_node_members(
+        kb_node_id: int,
+        login_user: LoginUser = Depends(LoginUser.get_login_user),
+):
+    """
+    超管：查询持有指定组织节点的所有用户（用于管理视图）。
+    """
+    if not login_user.is_admin():
+        raise HTTPException(status_code=403, detail='只有超级管理员有权查看节点成员')
+
+    user_ids = await UserPositionDao.aget_users_by_kb_node(kb_node_id)
+    if not user_ids:
+        return resp_200(data=[])
+
+    users = UserDao.get_user_by_ids(list(user_ids))
+    result = [
+        {'user_id': u.user_id, 'user_name': u.user_name}
+        for u in (users or [])
+    ]
+    return resp_200(data=result)

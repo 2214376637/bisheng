@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { KnowledgeSpace, SpaceSortType, getMineSpacesApi, getJoinedSpacesApi } from "~/api/knowledge";
+import { KnowledgeSpace, SpaceSortType, getMineSpacesApi, getJoinedSpacesApi, getAccessibleSpacesApi } from "~/api/knowledge";
 import { Button } from "~/components/ui/Button";
 import NavToggle from "~/components/Nav/NavToggle";
 import KnowledgeSpaceItem from "./KnowledgeSpaceItem";
@@ -54,6 +54,7 @@ export function KnowledgeSpaceSidebar({
     };
     const [createdCollapsed, setCreatedCollapsed] = useState(false);
     const [joinedCollapsed, setJoinedCollapsed] = useState(false);
+    const [accessibleCollapsed, setAccessibleCollapsed] = useState(false);
     const [createdSortBy, setCreatedSortBy] = useState<SpaceSortType>(SpaceSortType.UPDATE_TIME);
     const [joinedSortBy, setJoinedSortBy] = useState<SpaceSortType>(SpaceSortType.UPDATE_TIME);
     const [isListScrolling, setIsListScrolling] = useState(false);
@@ -73,6 +74,13 @@ export function KnowledgeSpaceSidebar({
     const { data: joinedSpaces = [], isLoading: isJoinedLoading } = useQuery({
         queryKey: ["knowledgeSpaces", "joined", joinedSortBy],
         queryFn: () => getJoinedSpacesApi({ order_by: joinedSortBy }),
+        placeholderData: (prev) => prev,
+    });
+
+    // Fetch spaces accessible via document-level permissions (user is NOT a member)
+    const { data: accessibleSpaces = [] } = useQuery({
+        queryKey: ["knowledgeSpaces", "accessible"],
+        queryFn: () => getAccessibleSpacesApi(),
         placeholderData: (prev) => prev,
     });
 
@@ -101,9 +109,11 @@ export function KnowledgeSpaceSidebar({
                 onSpaceSelect(createdSpaces[0]);
             } else if (joinedSpaces.length > 0) {
                 onSpaceSelect(joinedSpaces[0]);
+            } else if (accessibleSpaces.length > 0) {
+                onSpaceSelect(accessibleSpaces[0]);
             }
         }
-    }, [activeSpaceId, createdSpaces, joinedSpaces, isCreatedLoading, isJoinedLoading, onSpaceSelect]);
+    }, [activeSpaceId, createdSpaces, joinedSpaces, accessibleSpaces, isCreatedLoading, isJoinedLoading, onSpaceSelect]);
 
     const toggleSort = (type: "created" | "joined") => {
         if (type === "created") {
@@ -234,6 +244,36 @@ export function KnowledgeSpaceSidebar({
                                 </div>
                             )}
                         </div>
+
+                        {/* Accessible via document permission — visible only when not empty */}
+                        {accessibleSpaces.length > 0 && (
+                            <div className="py-4 border-t border-[#f0f0f0]">
+                                <SectionHeader
+                                    title={localize("com_knowledge.accessible_spaces")}
+                                    collapsed={accessibleCollapsed}
+                                    onToggle={() => setAccessibleCollapsed(!accessibleCollapsed)}
+                                />
+                                {!accessibleCollapsed && (
+                                    <div className="space-y-1">
+                                        {accessibleSpaces.map(s => (
+                                            <KnowledgeSpaceItem
+                                                key={s.id}
+                                                space={s}
+                                                type="joined"
+                                                isActive={s.id === activeSpaceId}
+                                                onSelect={onSpaceSelect}
+                                                onUpdate={handleUpdateSpace}
+                                                onDelete={handleDeleteSpace}
+                                                onLeave={handleLeaveSpace}
+                                                onPin={(id, pinned) => handlePinSpace(id, pinned, "joined")}
+                                                onSettings={onSpaceSettings}
+                                                onManageMembers={onManageMembers}
+                                            />
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
                 </div>
             </div>

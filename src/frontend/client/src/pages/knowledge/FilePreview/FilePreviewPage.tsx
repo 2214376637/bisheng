@@ -11,41 +11,26 @@ import { AiChatIcon } from "~/components/icons";
 import { AiAssistantPanel } from "~/pages/Subscription/AiChat/AiAssistantPanel";
 import { useResizablePanel } from "~/pages/Subscription/hooks/useResizablePanel";
 import FilePreview from "./index";
+import { buildFileAccessUrl, resolvePreviewFileType } from "./utils";
 import { useLocalize } from "~/hooks";
 
 const AI_SPLIT_STORAGE_KEY = "file-preview-ai-split-width";
 const AI_MIN_LEFT = 480;
 const AI_MIN_RIGHT = 360;
 
-/**
- * Extract file extension from a URL path, ignoring query parameters.
- * e.g. "/bisheng/preview/84296.html?X-Amz-Algorithm=..." → "html"
- */
-function extractExtFromUrl(url: string, fallback: string): string {
-    try {
-        // Strip query string and hash
-        const pathOnly = url.split('?')[0].split('#')[0];
-        const lastSegment = pathOnly.split('/').pop() || '';
-        const dotIndex = lastSegment.lastIndexOf('.');
-        if (dotIndex >= 0 && dotIndex < lastSegment.length - 1) {
-            return lastSegment.substring(dotIndex + 1).toLowerCase();
-        }
-    } catch {
-        // Parsing failed, use fallback
-    }
-    return fallback;
-}
-
 export default function FilePreviewPage() {
     const localize = useLocalize();
     const { fileId } = useParams<{ fileId: string }>();
     const [searchParams] = useSearchParams();
     const fileName = searchParams.get("name") || localize("com_knowledge.unknown_file");
+    const fileTypeParam = searchParams.get("type") || "";
     const spaceId = searchParams.get("spaceId") || "";
+    const initialFileType = resolvePreviewFileType(fileName, { typeParam: fileTypeParam });
 
     // Fetch real preview URL via API
     const [fileUrl, setFileUrl] = useState<string>("");
-    const [fileType, setFileType] = useState<string>("pdf");
+    const [fileType, setFileType] = useState<string>(initialFileType);
+    const [canDownload, setCanDownload] = useState(false);
     const [loading, setLoading] = useState(true);
     const [conversionFailed, setConversionFailed] = useState(false);
 
@@ -53,16 +38,22 @@ export default function FilePreviewPage() {
         if (!fileId || !spaceId) { setLoading(false); return; }
         setLoading(true);
         setConversionFailed(false);
+        setFileType(resolvePreviewFileType(fileName, { typeParam: fileTypeParam }));
         getFilePreviewApi(spaceId, fileId)
             .then((data) => {
-                // Prefer preview_url, fallback to original_url
-                const chosenUrl = data.preview_url || data.original_url;
+                setCanDownload(Boolean(data.can_download));
+                // preview_url 已由后端为 txt/md/图片等内嵌格式补全；只读用户走 preview_url，不写 original 下载
+                const chosenUrl = data.preview_url || (data.can_download ? data.original_url : "");
                 if (!chosenUrl) {
                     setFileUrl("");
                     return;
                 }
 
-                const ext = extractExtFromUrl(chosenUrl, "pdf");
+                const ext = resolvePreviewFileType(fileName, {
+                    typeParam: fileTypeParam,
+                    apiFileExt: data.file_ext,
+                    url: chosenUrl,
+                });
 
                 // If backend didn't produce a preview_url and the original is ppt/pptx,
                 // the raw file can't be rendered — mark as conversion failed.
@@ -73,12 +64,12 @@ export default function FilePreviewPage() {
                     return;
                 }
 
-                setFileUrl(`${window.location.origin}${__APP_ENV__.BASE_URL}${chosenUrl}`);
+                setFileUrl(buildFileAccessUrl(chosenUrl));
                 setFileType(ext);
             })
             .catch((err) => console.error("Failed to load preview URL:", err))
             .finally(() => setLoading(false));
-    }, [fileId, spaceId]);
+    }, [fileId, spaceId, fileName, fileTypeParam]);
 
     // --- AI Assistant state ---
     const [showAiAssistant, setShowAiAssistant] = useState(false);
@@ -147,9 +138,11 @@ export default function FilePreviewPage() {
                 className="h-full flex-shrink-0 overflow-hidden"
             >
                 <FilePreview
+                    key={`${fileId}-${fileType}-${fileUrl}`}
                     fileName={fileName}
                     fileType={fileType}
                     fileUrl={fileUrl}
+                    canDownload={canDownload}
                     actions={aiButton}
                     conversionFailed={conversionFailed}
                 />

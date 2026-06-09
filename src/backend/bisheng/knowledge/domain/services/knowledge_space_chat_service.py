@@ -60,6 +60,9 @@ class KnowledgeSpaceChatService:
         if not file_record or file_record.knowledge_id != knowledge_id or file_record.file_type != 1:
             raise NotFoundError(msg="Invalid file for chat")
 
+        # 文档级读权限校验（D-04 + D-06）：即使空间为 PRIVATE，也允许文档白名单用户访问
+        await KnowledgeFileDao.acheck_doc_permission(self.login_user.user_id, file_id, 'read')
+
         space = await KnowledgeDao.aquery_by_id(file_record.knowledge_id)
         if not space:
             raise NotFoundError(msg="Knowledge space not found for chat")

@@ -1207,9 +1207,40 @@ class KnowledgeService(KnowledgeUtils):
         knowledge_info = KnowledgeDao.query_by_id(file.knowledge_id)
         if not knowledge_info:
             raise NotFoundError(msg="knowledge not found")
-        if not login_user.access_check(knowledge_info.user_id, str(knowledge_info.id), AccessType.KNOWLEDGE):
-            raise UnAuthorizedError()
-        return cls.get_file_share_url(file=file)
+
+        # 文档级读权限校验（D-06）
+        KnowledgeFileDao.check_doc_permission(login_user.user_id, file_id, 'read')
+
+        users = UserDao.get_user_by_ids([login_user.user_id])
+        user = users[0] if users else None
+        perm = KnowledgeFileDao.get_user_file_permission(user, file_id) if user else None
+        original_url, preview_url = cls.get_file_share_url(file=file)
+        if perm not in ('write', 'admin'):
+            original_url = ""
+        return original_url, preview_url
+
+    # 无需转换即可内嵌预览的格式；无 preview 文件时回退 original_url
+    INLINE_PREVIEW_SUFFIXES = (
+        '.txt', '.md', '.html', '.htm', '.csv',
+        '.png', '.jpg', '.jpeg', '.bmp', '.gif', '.svg', '.webp',
+    )
+
+    @classmethod
+    def is_inline_previewable(cls, file_name: str) -> bool:
+        fn = (file_name or '').lower()
+        return any(fn.endswith(suffix) for suffix in cls.INLINE_PREVIEW_SUFFIXES)
+
+    @classmethod
+    def resolve_preview_url(cls, file: KnowledgeFile, original_url: str, preview_url: str) -> str:
+        if preview_url:
+            return preview_url
+        if cls.is_inline_previewable(file.file_name or '') and original_url:
+            return original_url
+        return ''
+
+    @classmethod
+    def build_inline_content_api_path(cls, space_id: int, file_id: int) -> str:
+        return f'/api/v1/knowledge/space/{space_id}/files/{file_id}/content'
 
     @classmethod
     def get_file_share_url(cls, file_id: int = None, file: KnowledgeFile = None) -> Tuple[str, str]:
@@ -1254,7 +1285,11 @@ class KnowledgeService(KnowledgeUtils):
     def get_file_bbox(
             cls, request: Request, login_user: UserPayload, file_id: int
     ) -> Any:
+        KnowledgeFileDao.check_doc_permission(login_user.user_id, file_id, 'read')
+
         file_info = KnowledgeFileDao.select_list([file_id])
+        if not file_info:
+            raise NotFoundError(msg="file not found")
         file_info = file_info[0]
         if not file_info.bbox_object_name:
             return None

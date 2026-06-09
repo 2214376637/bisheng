@@ -26,6 +26,7 @@ class AuthTypeEnum(str, Enum):
     PUBLIC = 'public'
     PRIVATE = 'private'
     APPROVAL = 'approval'
+    CREATOR_ADMIN = 'creator_admin'  # 遗留枚举，前端空间设置未使用
 
 
 class KnowledgeLevelEnum(Enum):
@@ -84,6 +85,12 @@ class KnowledgeBase(SQLModelSerializable):
     auth_type: AuthTypeEnum = Field(default=AuthTypeEnum.PUBLIC, description='Authentication Type')
     parent_id: Optional[int] = Field(default=None, index=True,
                                      description='Parent Knowledge Base ID')
+    org_node_id: Optional[int] = Field(
+        default=None, index=True,
+        description='绑定的组织节点知识库 ID（type=NORMAL）。'
+                    'None 表示不限制组织范围；'
+                    '有值时仅持有该节点或其上级节点职务的用户可继承访问此空间。'
+    )
 
     metadata_fields: Optional[List[Dict]] = Field(default=None, sa_column=Column(JSON, nullable=True),
                                                   description="Metadata Field Configuration for Knowledge Base")

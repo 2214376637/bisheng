@@ -868,8 +868,11 @@ def update_knowledge_model(*,
     knowledge.model = str(req_data.model_id)
     knowledge.name = req_data.knowledge_name
     knowledge.description = req_data.description
+    req_dict = req_data.model_dump(exclude_unset=True) if hasattr(req_data, 'model_dump') else req_data.dict(exclude_unset=True)
+    if 'org_node_id' in req_dict:
+        knowledge.org_node_id = req_data.org_node_id
 
-    if int(old_model_id) == int(req_data.model_id):
+    if str(old_model_id) == str(req_data.model_id):
         # If the model does not change, there is no need to rebuild
         KnowledgeDao.update_one(knowledge)
         return resp_200()

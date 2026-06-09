@@ -81,6 +81,7 @@ class KnowledgeFileBase(SQLModelSerializable):
     update_time: Optional[datetime] = Field(default=None, sa_column=Column(
         DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP')))
     org_kb_id: Optional[int] = Field(default=None, sa_column=Column(INT, nullable=True, index=True), description='所属院系/机构节点 ID（四级知识库机制继承鉴权）')
+    is_private: bool = Field(default=True, description='文档私有开关：True=仅上传者/白名单可见；False=无白名单时空间成员可见')
 
 
 
@@ -132,13 +133,13 @@ class DocumentAccess(SQLModelSerializable, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     file_id: int = Field(index=True, description='关联的文档 (KnowledgeFile.id)')
-    subject_type: str = Field(index=True, description='授权对象类型：user(用户) / org(机构节点)')
-    subject_id: str = Field(index=True, description='对应 ID (user_id 或 org_kb_id)')
+    subject_type: str = Field(index=True, description='授权对象类型：all(所有人) / user(用户) / org(机构节点)')
+    subject_id: str = Field(index=True, description='对应 ID："*"(所有人) / user_id / org_kb_id')
+    permission_type: str = Field(default='read', description='授权权限级别：read / write / admin')
     create_time: Optional[datetime] = Field(
         default=None,
         sa_column=Column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
     )
-
 
 
 class QAKnowledge(QAKnowledgeBase, table=True):
@@ -582,12 +583,39 @@ class KnowledgeFileDao(KnowledgeFileBase):
             session.commit()
 
     @classmethod
+    def _non_private_visible_via_space(cls, space, space_role) -> bool:
+        """
+        非私有且无白名单的文档，按知识空间可见性策略判断是否可见。
+        前端空间设置三档（CreateKnowledgeSpaceDrawer）：
+          - public（公开）：所有登录用户可见
+          - approval（审批）：仅 ACTIVE 成员可见（待审批用户不可见）
+          - private（私有）：仅 ACTIVE 成员可见（不可自助订阅，需被添加）
+        注：creator_admin 为后端遗留枚举，前端未暴露，按仅 Creator/Admin 处理。
+        """
+        from bisheng.knowledge.domain.models.knowledge import AuthTypeEnum
+        from bisheng.common.models.space_channel_member import UserRoleEnum
+        if not space:
+            return False
+        if space.auth_type == AuthTypeEnum.PUBLIC:
+            return True
+        if space_role is None:
+            return False
+        # 遗留类型，UI 无此选项
+        if space.auth_type == AuthTypeEnum.CREATOR_ADMIN:
+            return space_role in (UserRoleEnum.CREATOR, UserRoleEnum.ADMIN)
+        # approval / private：已是 ACTIVE 成员即可见
+        if space.auth_type in (AuthTypeEnum.PRIVATE, AuthTypeEnum.APPROVAL):
+            return True
+        return False
+
+    @classmethod
     async def aget_authorized_file_ids(cls, user_info, knowledge_id: int) -> List[int]:
         """
         根据文档独立权限与四级知识库继承规则，计算当前用户在此知识库下有权访问的所有文件 ID 集合。
         """
         from bisheng.user.domain.models.user_role import UserRoleDao
-        from bisheng.knowledge.domain.models.knowledge import KnowledgeDao
+        from bisheng.knowledge.domain.models.knowledge import KnowledgeDao, KnowledgeTypeEnum
+        from bisheng.common.models.space_channel_member import SpaceChannelMemberDao
         
         # 1. 超级管理员拥有全部权限
         role_list = await UserRoleDao.aget_user_roles(user_info.user_id)
@@ -599,6 +627,13 @@ class KnowledgeFileDao(KnowledgeFileBase):
             return [f.id for f in all_files]
 
         user_id_str = str(user_info.user_id)
+
+        space = await KnowledgeDao.aquery_by_id(knowledge_id)
+        space_role = None
+        if space and space.type == KnowledgeTypeEnum.SPACE.value:
+            space_role = await SpaceChannelMemberDao.async_get_active_member_role(
+                knowledge_id, user_info.user_id
+            )
         
         # 2. 获取该知识库下所有文件已配置的独立文档级权限
         file_ids = [f.id for f in all_files]
@@ -641,7 +676,11 @@ class KnowledgeFileDao(KnowledgeFileBase):
             if doc_rules:
                 matched = False
                 for rule in doc_rules:
-                    if rule.subject_type == "user" and rule.subject_id == user_id_str:
+                    if rule.subject_type == "all":
+                        # "所有人可读"规则：无需用户匹配，直接放行
+                        matched = True
+                        break
+                    elif rule.subject_type == "user" and rule.subject_id == user_id_str:
                         matched = True
                         break
                     elif rule.subject_type == "org" and int(rule.subject_id) in accessible_kb_set:
@@ -652,9 +691,19 @@ class KnowledgeFileDao(KnowledgeFileBase):
                 # 存在文档级权限且匹配失败，则直接拦截，不继承知识库权限
                 continue
 
-            # 6. 若文档未配置独立权限，回退检查知识库级别继承权限
-            target_kb_id = file.org_kb_id if file.org_kb_id is not None else file.knowledge_id
-            if target_kb_id in accessible_kb_set:
+            # 5.5 私有文档且无白名单规则：仅上传者可见（上传者已在步骤4放行）
+            if file.is_private:
+                continue
+
+            # 6. 知识空间：非私有且无白名单 → 按空间成员/公开策略可见
+            if space and space.type == KnowledgeTypeEnum.SPACE.value:
+                if cls._non_private_visible_via_space(space, space_role):
+                    authorized_file_ids.append(file.id)
+                continue
+
+            # 7. 机构知识库四级继承（org_kb_id 场景）
+            target_kb_id = file.org_kb_id
+            if target_kb_id and target_kb_id in accessible_kb_set:
                 authorized_file_ids.append(file.id)
 
         return authorized_file_ids
@@ -665,7 +714,8 @@ class KnowledgeFileDao(KnowledgeFileBase):
         同步版本：根据文档独立权限与四级知识库继承规则，计算当前用户在此知识库下有权访问的所有文件 ID 集合。
         """
         from bisheng.user.domain.models.user_role import UserRoleDao
-        from bisheng.knowledge.domain.models.knowledge import KnowledgeDao
+        from bisheng.knowledge.domain.models.knowledge import KnowledgeDao, KnowledgeTypeEnum
+        from bisheng.common.models.space_channel_member import SpaceChannelMemberDao
         
         # 1. 超级管理员拥有全部权限
         role_list = UserRoleDao.get_user_roles(user_info.user_id)
@@ -684,6 +734,13 @@ class KnowledgeFileDao(KnowledgeFileBase):
             return [f.id for f in all_files]
 
         user_id_str = str(user_info.user_id)
+
+        space = KnowledgeDao.query_by_id(knowledge_id)
+        space_role = None
+        if space and space.type == KnowledgeTypeEnum.SPACE.value:
+            space_role = SpaceChannelMemberDao.get_active_member_role_sync(
+                knowledge_id, user_info.user_id
+            )
         
         # 2. 获取该知识库下所有文件已配置的独立文档级权限
         file_ids = [f.id for f in all_files]
@@ -725,7 +782,11 @@ class KnowledgeFileDao(KnowledgeFileBase):
             if doc_rules:
                 matched = False
                 for rule in doc_rules:
-                    if rule.subject_type == "user" and rule.subject_id == user_id_str:
+                    if rule.subject_type == "all":
+                        # "所有人可读"规则：无需用户匹配，直接放行
+                        matched = True
+                        break
+                    elif rule.subject_type == "user" and rule.subject_id == user_id_str:
                         matched = True
                         break
                     elif rule.subject_type == "org" and int(rule.subject_id) in accessible_kb_set:
@@ -736,12 +797,269 @@ class KnowledgeFileDao(KnowledgeFileBase):
                 # 存在文档级权限且匹配失败，则直接拦截，不继承知识库权限
                 continue
 
-            # 6. 若文档未配置独立权限，回退检查知识库级别继承权限
-            target_kb_id = file.org_kb_id if file.org_kb_id is not None else file.knowledge_id
-            if target_kb_id in accessible_kb_set:
+            # 5.5 私有文档且无白名单规则：仅上传者可见
+            if file.is_private:
+                continue
+
+            if space and space.type == KnowledgeTypeEnum.SPACE.value:
+                if cls._non_private_visible_via_space(space, space_role):
+                    authorized_file_ids.append(file.id)
+                continue
+
+            target_kb_id = file.org_kb_id
+            if target_kb_id and target_kb_id in accessible_kb_set:
                 authorized_file_ids.append(file.id)
 
         return authorized_file_ids
+
+    # ─────────────────────── Permission computation ────────────────────────────
+
+    @classmethod
+    async def aget_user_file_permission(cls, user_info, file_id: int) -> Optional[str]:
+        """
+        异步：根据六步判定法，计算当前用户对指定文件的最高权限级别。
+        返回：'read' | 'write' | 'admin' | None（None 表示无任何权限）
+        权限判定顺序（文档级优先于知识库级）：
+          1. 超级管理员 → admin
+          2. 文档上传者/创建者 → admin
+          3. 文档有白名单规则 + 用户匹配 → 匹配到的最高权限
+          4. 文档有白名单规则 + 用户不匹配 → 拒绝（不回退知识库）
+          5. 私有文档且无白名单规则 → 拒绝（仅上传者/超级管理员）
+          6. 非私有且无白名单 → 回退知识库级；空间 Creator/Admin → admin，其他成员 → read
+        """
+        from bisheng.user.domain.models.user_role import UserRoleDao
+        from bisheng.knowledge.domain.models.knowledge import KnowledgeDao, AuthTypeEnum
+        from bisheng.common.models.space_channel_member import SpaceChannelMemberDao, UserRoleEnum
+
+        # 1. 查询文件
+        file = await cls.query_by_id(file_id)
+        if not file:
+            return None
+
+        # 2. 超级管理员始终拥有 admin 权限
+        role_list = await UserRoleDao.aget_user_roles(user_info.user_id)
+        is_admin = any(role.role_id == 1 for role in role_list) if role_list else False
+        if is_admin:
+            return 'admin'
+
+        # 3. 文档上传者/创建者默认拥有 admin 权限
+        if file.user_id == user_info.user_id:
+            return 'admin'
+
+        space_id = file.knowledge_id
+        user_space_role = await SpaceChannelMemberDao.async_get_active_member_role(space_id, user_info.user_id)
+
+        # 4. 检查文档级独立授权（白名单）
+        async with get_async_db_session() as session:
+            stmt = select(DocumentAccess).where(DocumentAccess.file_id == file_id)
+            doc_rules = (await session.exec(stmt)).all()
+
+        if doc_rules:
+            # 获取用户可访问的机构知识库节点集合（用于 org 类型规则匹配）
+            authorized_kb_ids = await KnowledgeDao.aget_authorized_knowledge_ids(user_info)
+            accessible_kb_set = set(authorized_kb_ids)
+            current_layer = list(accessible_kb_set)
+            from bisheng.knowledge.domain.models.knowledge import Knowledge
+            while current_layer:
+                async with get_async_db_session() as session:
+                    res = await session.execute(select(Knowledge).where(col(Knowledge.id).in_(current_layer)))
+                    kbs = res.scalars().all()
+                parent_ids = [kb.parent_id for kb in kbs
+                              if kb.parent_id is not None and kb.parent_id not in accessible_kb_set]
+                accessible_kb_set.update(parent_ids)
+                current_layer = parent_ids
+
+            user_id_str = str(user_info.user_id)
+            matched_perms = []
+            for rule in doc_rules:
+                if rule.subject_type == "all":
+                    matched_perms.append(rule.permission_type)
+                elif rule.subject_type == "user" and rule.subject_id == user_id_str:
+                    matched_perms.append(rule.permission_type)
+                elif rule.subject_type == "org" and int(rule.subject_id) in accessible_kb_set:
+                    matched_perms.append(rule.permission_type)
+
+            if matched_perms:
+                # 优先级：admin > write/edit > read
+                if 'admin' in matched_perms:
+                    return 'admin'
+                elif 'write' in matched_perms or 'edit' in matched_perms:
+                    return 'write'
+                else:
+                    return 'read'
+
+            # 存在白名单规则但用户未匹配：一律拒绝，不回退知识库级权限
+            return None
+
+        # 私有文档且无白名单规则：仅上传者/超级管理员
+        if file.is_private:
+            return None
+
+        # 回退至知识库级权限判断
+        space = await KnowledgeDao.aquery_by_id(space_id)
+        if not space:
+            return None
+
+        if user_space_role in [UserRoleEnum.CREATOR, UserRoleEnum.ADMIN]:
+            return 'admin'
+
+        if space.auth_type == AuthTypeEnum.PUBLIC:
+            return 'read'
+
+        # approval / private：ACTIVE 成员只读；遗留 creator_admin 普通成员无权限
+        if space.auth_type in [AuthTypeEnum.PRIVATE, AuthTypeEnum.APPROVAL]:
+            if user_space_role is not None:
+                return 'read'
+
+        if space.auth_type == AuthTypeEnum.CREATOR_ADMIN:
+            return None
+
+        return None
+
+    @classmethod
+    def get_user_file_permission(cls, user_info, file_id: int) -> Optional[str]:
+        """
+        同步：根据七步判定法，计算当前用户对指定文件的最高权限级别。
+        供同步代码路径（如 get_knowledge_files 列表接口）调用。
+        """
+        from bisheng.user.domain.models.user_role import UserRoleDao
+        from bisheng.knowledge.domain.models.knowledge import KnowledgeDao, AuthTypeEnum
+        from bisheng.common.models.space_channel_member import SpaceChannelMemberDao, UserRoleEnum
+
+        # 1. 查询文件
+        file = cls.query_by_id_sync(file_id)
+        if not file:
+            return None
+
+        # 2. 超级管理员
+        role_list = UserRoleDao.get_user_roles(user_info.user_id)
+        is_admin = any(role.role_id == 1 for role in role_list) if role_list else False
+        if is_admin:
+            return 'admin'
+
+        # 3. 文档上传者/创建者
+        if file.user_id == user_info.user_id:
+            return 'admin'
+
+        space_id = file.knowledge_id
+        user_space_role = SpaceChannelMemberDao.get_active_member_role_sync(space_id, user_info.user_id)
+
+        # 4. 文档级白名单
+        with get_sync_db_session() as session:
+            stmt = select(DocumentAccess).where(DocumentAccess.file_id == file_id)
+            doc_rules = session.exec(stmt).all()
+
+        if doc_rules:
+            authorized_kb_ids = KnowledgeDao.get_authorized_knowledge_ids(user_info)
+            accessible_kb_set = set(authorized_kb_ids)
+            current_layer = list(accessible_kb_set)
+            from bisheng.knowledge.domain.models.knowledge import Knowledge
+            while current_layer:
+                with get_sync_db_session() as session:
+                    kbs = session.exec(select(Knowledge).where(col(Knowledge.id).in_(current_layer))).all()
+                parent_ids = [kb.parent_id for kb in kbs
+                              if kb.parent_id is not None and kb.parent_id not in accessible_kb_set]
+                accessible_kb_set.update(parent_ids)
+                current_layer = parent_ids
+
+            user_id_str = str(user_info.user_id)
+            matched_perms = []
+            for rule in doc_rules:
+                if rule.subject_type == "all":
+                    matched_perms.append(rule.permission_type)
+                elif rule.subject_type == "user" and rule.subject_id == user_id_str:
+                    matched_perms.append(rule.permission_type)
+                elif rule.subject_type == "org" and int(rule.subject_id) in accessible_kb_set:
+                    matched_perms.append(rule.permission_type)
+
+            if matched_perms:
+                if 'admin' in matched_perms:
+                    return 'admin'
+                elif 'write' in matched_perms or 'edit' in matched_perms:
+                    return 'write'
+                else:
+                    return 'read'
+
+            return None
+
+        if file.is_private:
+            return None
+
+        # 知识库级回退
+        space = KnowledgeDao.query_by_id(space_id)
+        if not space:
+            return None
+
+        if user_space_role in [UserRoleEnum.CREATOR, UserRoleEnum.ADMIN]:
+            return 'admin'
+
+        if space.auth_type == AuthTypeEnum.PUBLIC:
+            return 'read'
+
+        if space.auth_type in [AuthTypeEnum.PRIVATE, AuthTypeEnum.APPROVAL]:
+            if user_space_role is not None:
+                return 'read'
+
+        if space.auth_type == AuthTypeEnum.CREATOR_ADMIN:
+            return None
+
+        return None
+
+    @classmethod
+    async def acheck_doc_permission(cls, user_id: int, doc_id: int, required_perm: str) -> bool:
+        """
+        异步：验证用户是否拥有指定文档的指定权限（D-06）。
+        不满足时抛出 HTTP 403。
+        required_perm: 'read' | 'write' | 'edit' | 'admin'
+        """
+        from fastapi import HTTPException
+        from bisheng.user.domain.models.user import UserDao
+        users = await UserDao.aget_user_by_ids([user_id])
+        user = users[0] if users else None
+        if not user:
+            raise HTTPException(status_code=403, detail="User not found")
+
+        perm = await cls.aget_user_file_permission(user, doc_id)
+        if not perm:
+            raise HTTPException(status_code=403, detail="对该文档无访问权限")
+
+        perm_levels = ['read', 'write', 'admin']
+        perm_rank = {'read': 0, 'write': 1, 'edit': 1, 'admin': 2}
+        required_rank = perm_rank.get(required_perm, 0)
+        actual_rank = perm_rank.get(perm, 0)
+
+        if actual_rank < required_rank:
+            msg_map = {'admin': "需要完全控制权限", 'write': "需要编辑权限", 'edit': "需要编辑权限", 'read': "需要读取权限"}
+            raise HTTPException(status_code=403, detail=msg_map.get(required_perm, "权限不足"))
+
+        return True
+
+    @classmethod
+    def check_doc_permission(cls, user_id: int, doc_id: int, required_perm: str) -> bool:
+        """
+        同步：验证用户是否拥有指定文档的指定权限（D-06）。
+        不满足时抛出 HTTP 403。
+        """
+        from fastapi import HTTPException
+        from bisheng.user.domain.models.user import UserDao
+        users = UserDao.get_user_by_ids([user_id])
+        user = users[0] if users else None
+        if not user:
+            raise HTTPException(status_code=403, detail="User not found")
+
+        perm = cls.get_user_file_permission(user, doc_id)
+        if not perm:
+            raise HTTPException(status_code=403, detail="对该文档无访问权限")
+
+        perm_rank = {'read': 0, 'write': 1, 'edit': 1, 'admin': 2}
+        required_rank = perm_rank.get(required_perm, 0)
+        actual_rank = perm_rank.get(perm, 0)
+
+        if actual_rank < required_rank:
+            msg_map = {'admin': "需要完全控制权限", 'write': "需要编辑权限", 'edit': "需要编辑权限", 'read': "需要读取权限"}
+            raise HTTPException(status_code=403, detail=msg_map.get(required_perm, "权限不足"))
+
+        return True
 
 
 class QAKnoweldgeDao(QAKnowledgeBase):

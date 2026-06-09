@@ -542,10 +542,11 @@ class UsedAppPin(BaseModel):
 
 class UpdateKnowledgeReq(BaseModel):
     """Update Knowledge Base Model Request"""
-    model_id: int = Field(..., description='embeddingModelsID')
+    model_id: Optional[str] = Field(default=None, description='embeddingModelsID')
     model_type: Optional[str] = Field(default=None,
                                       description='Model type, when not passed on, it will be based onmodel_idAuto Query')
     knowledge_id: Optional[int] = Field(default=None,
                                         description='The knowledge base uponID, if empty, update all private repositories')
     knowledge_name: Optional[str] = Field(default=None, description='Library Name')
     description: Optional[str] = Field(default=None, description='KB Description')
+    org_node_id: Optional[int] = Field(default=None, description='绑定的机构节点 ID。')

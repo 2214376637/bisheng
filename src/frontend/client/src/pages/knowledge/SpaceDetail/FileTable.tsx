@@ -13,7 +13,9 @@ import {
     MoreVertical,
     PencilLineIcon,
     RefreshCw,
-    Tag, Trash2
+    Shield,
+    Tag, Trash2,
+    Lock
 } from "lucide-react";
 import {
     Checkbox,
@@ -31,7 +33,8 @@ import { formatBytes } from "~/utils";
 import { useInlineRename } from "../hooks/useInlineRename";
 import { formatTime, isKnowledgeItemPreviewable } from "../knowledgeUtils";
 import { knowledgeSpaceDropdownSurfaceClassName } from "~/components/SidebarListMoreMenu";
-import { useLocalize } from "~/hooks";
+import { useAuthContext, useLocalize } from "~/hooks";
+import { SystemRoles } from "~/types/chat";
 
 /** 状态列悬停：下载 / 更多 — 白底、细灰边、4px 圆角 */
 const FILE_ROW_ACTION_BTN_CLASS =
@@ -454,12 +457,13 @@ interface FileTableProps {
     onPreview?: (id: string) => void;
     onValidateName: (name: string, isFolder: boolean, fileId: string, isCreating: boolean) => string | null;
     onCancelCreate?: () => void;
+    onConfigurePermissions?: (id: string, name: string) => void;
     sortBy: SortType | undefined;
     sortDirection: SortDirection | undefined;
     onSort: (sortBy: SortType) => void;
 }
 
-export function FileTable({ files, selectedFiles, handleSelectAll, handleSelectFile, isAdmin, onDownload, onEditTags, onRename, onDelete, onRetry, onNavigateFolder, onPreview, onValidateName, onCancelCreate, sortBy, sortDirection, onSort }: FileTableProps) {
+export function FileTable({ files, selectedFiles, handleSelectAll, handleSelectFile, isAdmin, onDownload, onEditTags, onRename, onDelete, onRetry, onNavigateFolder, onPreview, onValidateName, onCancelCreate, onConfigurePermissions, sortBy, sortDirection, onSort }: FileTableProps) {
     const { columnWidths, onResizeStart, totalWidth } = useResizableColumns();
     const scrollRef = useRef<HTMLDivElement>(null);
     const { showLeftShadow, showRightShadow } = useScrollShadow(scrollRef);
@@ -512,6 +516,7 @@ export function FileTable({ files, selectedFiles, handleSelectAll, handleSelectF
                                 onPreview={() => onPreview?.(file.id)}
                                 onValidateName={(newName) => onValidateName?.(newName, file.type === FileType.FOLDER, file.id, !!file.isCreating)}
                                 onCancelCreate={onCancelCreate}
+                                onConfigurePermissions={onConfigurePermissions}
                                 columnWidths={columnWidths}
                                 showLeftShadow={showLeftShadow}
                                 showRightShadow={showRightShadow}
@@ -551,6 +556,7 @@ function FileRow({
     onPreview,
     onValidateName,
     onCancelCreate,
+    onConfigurePermissions,
     columnWidths,
     showLeftShadow,
     showRightShadow,
@@ -568,11 +574,13 @@ function FileRow({
     onPreview?: () => void;
     onValidateName?: (newName: string) => string | null;
     onCancelCreate?: () => void;
+    onConfigurePermissions?: (id: string, name: string) => void;
     columnWidths: Record<ColumnKey, number>;
     showLeftShadow: boolean;
     showRightShadow: boolean;
 }) {
     const localize = useLocalize();
+    const { user } = useAuthContext();
     const [moreMenuOpen, setMoreMenuOpen] = useState(false);
     const isFolder = file.type === FileType.FOLDER;
     const isCreating = !!file.isCreating;
@@ -604,7 +612,14 @@ function FileRow({
             (isFolder && file.successFileNum !== undefined && file.fileNum !== undefined && file.successFileNum < file.fileNum)
         )
     );
-    const showMoreMenu = isAdmin;
+
+    const isOwner = !isFolder && file.userId && user?.id && String(file.userId) === String(user.id);
+    const isSystemAdmin = user?.role === SystemRoles.ADMIN;
+    const canWrite = isFolder ? isAdmin : (isAdmin || isSystemAdmin || isOwner || file.permission === "write" || file.permission === "admin");
+    const canAdmin = isFolder ? isAdmin : (isAdmin || isSystemAdmin || isOwner || file.permission === "admin");
+    const canDownload = isFolder ? isAdmin : canWrite;
+    const showMoreMenu = canWrite || canAdmin;
+
     const namePreviewable = isKnowledgeItemPreviewable(file);
     const [rowHovered, setRowHovered] = useState(false);
     const showRowActions = rowHovered || moreMenuOpen;
@@ -612,17 +627,19 @@ function FileRow({
         <div
             className="absolute right-3 top-1/2 z-[35] flex -translate-y-1/2 items-center gap-1"
         >
-            <button
-                type="button"
-                className={FILE_ROW_ACTION_BTN_CLASS}
-                onClick={(e) => {
-                    e.stopPropagation();
-                    onDownload();
-                }}
-                title={localize("com_knowledge.download")}
-            >
-                <Download className="size-4" />
-            </button>
+            {canDownload && (
+                <button
+                    type="button"
+                    className={FILE_ROW_ACTION_BTN_CLASS}
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        onDownload();
+                    }}
+                    title={localize("com_knowledge.download")}
+                >
+                    <Download className="size-4" />
+                </button>
+            )}
             {showMoreMenu && (
                 <DropdownMenu open={moreMenuOpen} onOpenChange={setMoreMenuOpen}>
                     <DropdownMenuTrigger asChild>
@@ -632,9 +649,9 @@ function FileRow({
                     </DropdownMenuTrigger>
                     <DropdownMenuContent
                         align="end"
-                        className={cn("w-32", knowledgeSpaceDropdownSurfaceClassName)}
+                        className={cn("w-36", knowledgeSpaceDropdownSurfaceClassName)}
                     >
-                        {!isFolder && (
+                        {!isFolder && canWrite && (
                             <DropdownMenuItem
                                 onClick={(e) => {
                                     e.stopPropagation();
@@ -645,16 +662,18 @@ function FileRow({
                                 {localize("com_knowledge.edit_tags")}
                             </DropdownMenuItem>
                         )}
-                        <DropdownMenuItem
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                startRenaming();
-                            }}
-                        >
-                            <Edit className="mr-2 size-4" />
-                            {localize("com_knowledge.rename")}
-                        </DropdownMenuItem>
-                        {hasRetryOption && (
+                        {canWrite && (
+                            <DropdownMenuItem
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    startRenaming();
+                                }}
+                            >
+                                <Edit className="mr-2 size-4" />
+                                {localize("com_knowledge.rename")}
+                            </DropdownMenuItem>
+                        )}
+                        {hasRetryOption && canWrite && (
                             <DropdownMenuItem
                                 onClick={(e) => {
                                     e.stopPropagation();
@@ -665,16 +684,29 @@ function FileRow({
                                 {localize("com_knowledge.retry")}
                             </DropdownMenuItem>
                         )}
-                        <DropdownMenuItem
-                            className="text-[#f53f3f] focus:bg-[#fff2f0] focus:text-[#f53f3f]"
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                onDelete();
-                            }}
-                        >
-                            <Trash2 className="mr-2 size-4" />
-                            {localize("com_knowledge.delete")}
-                        </DropdownMenuItem>
+                        {!isFolder && canAdmin && (
+                            <DropdownMenuItem
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onConfigurePermissions?.(file.id, file.name);
+                                }}
+                            >
+                                <Shield className="mr-2 size-4" />
+                                权限配置
+                            </DropdownMenuItem>
+                        )}
+                        {canWrite && (
+                            <DropdownMenuItem
+                                className="text-[#f53f3f] focus:bg-[#fff2f0] focus:text-[#f53f3f]"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onDelete();
+                                }}
+                            >
+                                <Trash2 className="mr-2 size-4" />
+                                {localize("com_knowledge.delete")}
+                            </DropdownMenuItem>
+                        )}
                     </DropdownMenuContent>
                 </DropdownMenu>
             )}
@@ -760,6 +792,12 @@ function FileRow({
                             }}
                         >
                             {file.name}
+                            {file.isPrivate && (
+                                <Lock
+                                    className="size-3.5 shrink-0 text-amber-500"
+                                    title={localize("com_knowledge.private_doc")}
+                                />
+                            )}
                         </span>
                     )}
                 </div>

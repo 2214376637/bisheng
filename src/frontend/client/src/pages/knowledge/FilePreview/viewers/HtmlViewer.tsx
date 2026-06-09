@@ -8,7 +8,7 @@ interface HtmlViewerProps {
 
 export function HtmlViewer({ fileUrl, zoomLevel }: HtmlViewerProps) {
     const localize = useLocalize();
-  const [htmlContent, setHtmlContent] = useState<string | null>(null);
+    const [htmlContent, setHtmlContent] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
@@ -16,7 +16,7 @@ export function HtmlViewer({ fileUrl, zoomLevel }: HtmlViewerProps) {
         const fetchHtml = async () => {
             try {
                 setLoading(true);
-                const response = await fetch(fileUrl);
+                const response = await fetch(fileUrl, { credentials: "include" });
                 if (!response.ok) throw new Error(localize("com_knowledge.failure_status", { 0: response.status }));
                 const text = await response.text();
                 setHtmlContent(text);

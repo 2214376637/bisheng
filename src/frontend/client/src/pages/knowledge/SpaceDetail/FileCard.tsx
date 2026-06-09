@@ -1,4 +1,4 @@
-import { Circle, Download, Edit, MoreVertical, RefreshCw, Tag, Trash2, X } from "lucide-react";
+import { Circle, Download, Edit, Lock, MoreVertical, RefreshCw, Shield, Tag, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import { FileStatus, FileType, KnowledgeFile, SpaceRole } from "~/api/knowledge";
 import { Button, Checkbox } from "~/components";
@@ -15,7 +15,8 @@ import FileIconRenderer from "./FileIcon";
 import TagGroup from "./TagGroup";
 import { useInlineRename } from "../hooks/useInlineRename";
 import { formatTimeCard, isKnowledgeItemPreviewable } from "../knowledgeUtils";
-import { useLocalize } from "~/hooks";
+import { useLocalize, useAuthContext } from "~/hooks";
+import { SystemRoles } from "~/types/chat";
 
 interface FileCardProps {
     file: KnowledgeFile;
@@ -31,6 +32,7 @@ interface FileCardProps {
     onPreview?: (fileId: string) => void;
     onValidateName?: (newName: string) => string | null;
     onCancelCreate?: () => void;
+    onConfigurePermissions?: (id: string, name: string) => void;
     disableClickNavigate?: boolean;
     hideSelectionCheckbox?: boolean;
     /** Hide per-file download UI (icon + menu item), e.g. in read-only preview drawers. */
@@ -51,11 +53,13 @@ export function FileCard({
     onPreview,
     onValidateName,
     onCancelCreate,
+    onConfigurePermissions,
     disableClickNavigate = false,
     hideSelectionCheckbox = false,
     hideDownloadActions = false,
 }: FileCardProps) {
     const localize = useLocalize();
+    const { user } = useAuthContext();
     const isCreating = !!file.isCreating;
     const [hovered, setHovered] = useState(false);
     const [moreMenuOpen, setMoreMenuOpen] = useState(false);
@@ -170,10 +174,16 @@ export function FileCard({
             (isFolder && file.successFileNum !== undefined && file.fileNum !== undefined && file.successFileNum < file.fileNum)
         )
     );
-    const showMoreMenu = isAdmin;
+    const isOwner = !isFolder && file.userId && user?.id && String(file.userId) === String(user.id);
+    const isSystemAdmin = user?.role === SystemRoles.ADMIN;
+    const canWrite = isFolder ? isAdmin : (isAdmin || isSystemAdmin || isOwner || file.permission === "write" || file.permission === "admin");
+    const canAdmin = isFolder ? isAdmin : (isAdmin || isSystemAdmin || isOwner || file.permission === "admin");
+    const canDownload = isFolder ? isAdmin : canWrite;
+    const showMoreMenu = canWrite || canAdmin;
+
     /** 有「更多」时下载只在菜单内；无更多（普通成员/预览）时单独显示下载图标 */
-    const showInlineDownloadButton = !hideDownloadActions && !showMoreMenu;
-    const showMenuDownloadItem = !hideDownloadActions;
+    const showInlineDownloadButton = !hideDownloadActions && !showMoreMenu && canDownload;
+    const showMenuDownloadItem = !hideDownloadActions && canDownload;
     const showCardActions = moreMenuOpen || hovered;
     const cardOpensPreviewOrFolder =
         !isCreating &&
@@ -245,7 +255,7 @@ export function FileCard({
 
                                 <DropdownMenuContent
                                     align="end"
-                                    className={cn("min-w-[120px]", knowledgeSpaceDropdownSurfaceClassName)}
+                                    className={cn("min-w-[140px]", knowledgeSpaceDropdownSurfaceClassName)}
                                     onClick={(e) => e.stopPropagation()}
                                 >
                                     {showMenuDownloadItem && (
@@ -258,44 +268,53 @@ export function FileCard({
                                         </DropdownMenuItem>
                                     )}
 
-                                    {isAdmin && (
-                                        <>
-                                            {!isFolder && (
-                                                <DropdownMenuItem
-                                                    onClick={(e) => { e.stopPropagation(); onEditTags(); }}
-                                                    className="flex items-center"
-                                                >
-                                                    <Tag className="mr-2 size-4 shrink-0" />
-                                                    {localize("com_knowledge.edit_tags")}
-                                                </DropdownMenuItem>
-                                            )}
-                                            <DropdownMenuItem
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    startRenaming();
-                                                }}
-                                                className="flex items-center"
-                                            >
-                                                <Edit className="mr-2 size-4 shrink-0" />
-                                                {localize("com_knowledge.rename")}
-                                            </DropdownMenuItem>
-                                            {hasRetryOption && (
-                                                <DropdownMenuItem
-                                                    onClick={(e) => { e.stopPropagation(); onRetry?.(); }}
-                                                    className="flex items-center"
-                                                >
-                                                    <RefreshCw className="mr-2 size-4 shrink-0" />
-                                                    {localize("com_knowledge.retry")}
-                                                </DropdownMenuItem>
-                                            )}
-                                            <DropdownMenuItem
-                                                onClick={(e) => { e.stopPropagation(); onDelete(); }}
-                                                className="flex items-center text-[#f53f3f] focus:text-[#f53f3f]"
-                                            >
-                                                <Trash2 className="mr-2 size-4 shrink-0" />
-                                                {localize("com_knowledge.delete")}
-                                            </DropdownMenuItem>
-                                        </>
+                                    {!isFolder && canWrite && (
+                                        <DropdownMenuItem
+                                            onClick={(e) => { e.stopPropagation(); onEditTags(); }}
+                                            className="flex items-center"
+                                        >
+                                            <Tag className="mr-2 size-4 shrink-0" />
+                                            {localize("com_knowledge.edit_tags")}
+                                        </DropdownMenuItem>
+                                    )}
+                                    {canWrite && (
+                                        <DropdownMenuItem
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                startRenaming();
+                                            }}
+                                            className="flex items-center"
+                                        >
+                                            <Edit className="mr-2 size-4 shrink-0" />
+                                            {localize("com_knowledge.rename")}
+                                        </DropdownMenuItem>
+                                    )}
+                                    {hasRetryOption && canWrite && (
+                                        <DropdownMenuItem
+                                            onClick={(e) => { e.stopPropagation(); onRetry?.(); }}
+                                            className="flex items-center"
+                                        >
+                                            <RefreshCw className="mr-2 size-4 shrink-0" />
+                                            {localize("com_knowledge.retry")}
+                                        </DropdownMenuItem>
+                                    )}
+                                    {!isFolder && canAdmin && (
+                                        <DropdownMenuItem
+                                            onClick={(e) => { e.stopPropagation(); onConfigurePermissions?.(file.id, file.name); }}
+                                            className="flex items-center"
+                                        >
+                                            <Shield className="mr-2 size-4 shrink-0" />
+                                            权限配置
+                                        </DropdownMenuItem>
+                                    )}
+                                    {canWrite && (
+                                        <DropdownMenuItem
+                                            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+                                            className="flex items-center text-[#f53f3f] focus:text-[#f53f3f]"
+                                        >
+                                            <Trash2 className="mr-2 size-4 shrink-0" />
+                                            {localize("com_knowledge.delete")}
+                                        </DropdownMenuItem>
                                     )}
                                 </DropdownMenuContent>
                             </DropdownMenu>
@@ -308,6 +327,12 @@ export function FileCard({
                     {/* 文件名和状态 */}
                     <div className="flex items-center text-sm font-medium min-w-0">
                         {getStatusText()}
+                        {file.isPrivate && !isFolder && (
+                            <Lock
+                                className="size-3 shrink-0 text-amber-500 ml-1"
+                                title={localize("com_knowledge.private_doc")}
+                            />
+                        )}
                     </div>
 
                     {/* 底部信息 (标签、数量和时间) */}

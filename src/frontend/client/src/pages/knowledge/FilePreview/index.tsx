@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { getViewerType, supportsPagination, supportsSidebar, supportsZoom } from "./viewers";
+import { resolvePreviewFileType } from "./utils";
 import { DocxViewer } from "./viewers/DocxViewer";
 import { HtmlViewer } from "./viewers/HtmlViewer";
 import { ImageViewer } from "./viewers/ImageViewer";
@@ -29,6 +30,8 @@ export interface FilePreviewProps {
     actions?: React.ReactNode;
     /** True when pptx-to-pdf conversion failed on the backend */
     conversionFailed?: boolean;
+    /** Whether the current user may download the original file */
+    canDownload?: boolean;
 }
 
 export default function FilePreview({
@@ -37,9 +40,18 @@ export default function FilePreview({
     fileUrl,
     actions,
     conversionFailed = false,
+    canDownload = false,
 }: FilePreviewProps) {
     const localize = useLocalize();
-    const viewerType = getViewerType(fileType);
+    // 文件名扩展名优先于 fileType，避免 /content 等无扩展名 URL 被误判为 pdf 后 error 残留
+    const nameExt = resolvePreviewFileType(fileName, {});
+    const effectiveFileType = (() => {
+        if (!nameExt) return fileType;
+        if (!fileType) return nameExt;
+        if (getViewerType(nameExt) === getViewerType(fileType)) return fileType;
+        return nameExt;
+    })();
+    const viewerType = getViewerType(effectiveFileType);
     const hasSidebar = supportsSidebar(viewerType);
     const hasPagination = supportsPagination(viewerType);
     const hasZoom = supportsZoom(viewerType);
@@ -55,9 +67,22 @@ export default function FilePreview({
     const [sidebarOpen, setSidebarOpen] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
+    // 非 PDF 时清理 PDF 状态，避免上一次误加载的 error 挡住正确 viewer
+    useEffect(() => {
+        if (viewerType !== "pdf") {
+            setError(null);
+            setPdfDoc(null);
+            setTotalPages(0);
+            setCurrentPage(1);
+        }
+    }, [viewerType, fileUrl, fileName]);
+
     // Load PDF
     useEffect(() => {
         if (viewerType !== "pdf" || !fileUrl) return;
+
+        let cancelled = false;
+        setError(null);
 
         pdfjsLib.GlobalWorkerOptions.workerSrc =
             // @ts-ignore
@@ -66,14 +91,20 @@ export default function FilePreview({
         pdfjsLib
             .getDocument(fileUrl)
             .promise.then((doc) => {
+                if (cancelled) return;
                 setPdfDoc(doc);
                 setTotalPages(doc.numPages);
             })
             .catch((e) => {
+                if (cancelled) return;
                 console.error("Failed to load PDF:", e);
                 setError(localize("com_knowledge.load_pdf_failed"));
             });
-    }, [fileUrl, viewerType]);
+
+        return () => {
+            cancelled = true;
+        };
+    }, [fileUrl, viewerType, localize]);
 
     // Update document title
     useEffect(() => {
@@ -103,6 +134,7 @@ export default function FilePreview({
     }, []);
 
     const handleDownload = useCallback(() => {
+        if (!canDownload || !fileUrl) return;
         const link = document.createElement("a");
         link.href = fileUrl;
         link.download = fileName;
@@ -110,22 +142,26 @@ export default function FilePreview({
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-    }, [fileName, fileUrl]);
+    }, [fileName, fileUrl, canDownload]);
+
+    const downloadHandler = canDownload ? handleDownload : undefined;
 
     // Unsupported format
     if (viewerType === "unsupported") {
         return (
             <div className="w-full h-full flex flex-col">
-                <TopBar fileName={fileName} onDownload={handleDownload} actions={actions} showZoom={false} />
+                <TopBar fileName={fileName} onDownload={downloadHandler} actions={actions} showZoom={false} />
                 <div className="flex-1 flex items-center justify-center bg-[#fbfbfb]">
                     <div className="flex flex-col items-center gap-4 text-[#86909c]">
                         <div className="text-5xl">📄</div>
                         <p className="text-lg">{localize("com_knowledge.unsupported_format_prefix")}{fileType}{localize("com_knowledge.unsupported_format_suffix")}</p>
-                        <button
-                            onClick={handleDownload}
-                            className="px-4 py-2 bg-primary text-white rounded-md text-sm hover:bg-primary/90 transition-colors"
-                        >
-                            {localize("com_knowledge.download_file")}</button>
+                        {canDownload && (
+                            <button
+                                onClick={handleDownload}
+                                className="px-4 py-2 bg-primary text-white rounded-md text-sm hover:bg-primary/90 transition-colors"
+                            >
+                                {localize("com_knowledge.download_file")}</button>
+                        )}
                     </div>
                 </div>
             </div>
@@ -142,7 +178,7 @@ export default function FilePreview({
                     zoomLevel={zoomLevel}
                     onZoomIn={handleZoomIn}
                     onZoomOut={handleZoomOut}
-                    onDownload={fileUrl ? handleDownload : undefined}
+                    onDownload={fileUrl && canDownload ? handleDownload : undefined}
                     actions={actions}
                 />
                 <div className="flex-1 flex items-center justify-center bg-[#fbfbfb]">
@@ -155,11 +191,11 @@ export default function FilePreview({
         );
     }
 
-    // Error state
-    if (error) {
+    // Error state（仅 PDF 查看器）
+    if (error && viewerType === "pdf") {
         return (
             <div className="w-full h-full flex flex-col">
-                <TopBar fileName={fileName} onDownload={handleDownload} actions={actions} showZoom={false} />
+                <TopBar fileName={fileName} onDownload={downloadHandler} actions={actions} showZoom={false} />
                 <div className="flex-1 flex items-center justify-center bg-[#fbfbfb]">
                     <div className="flex flex-col items-center gap-3 text-[#86909c]">
                         <div className="text-4xl">📄</div>
@@ -185,7 +221,7 @@ export default function FilePreview({
             case "docx":
                 return <DocxViewer fileUrl={fileUrl} zoomLevel={zoomLevel} />;
             case "xlsx":
-                return <XlsxViewer fileUrl={fileUrl} fileExt={fileType} zoomLevel={zoomLevel} />;
+                return <XlsxViewer fileUrl={fileUrl} fileExt={effectiveFileType} zoomLevel={zoomLevel} />;
             case "markdown":
                 return <MarkdownViewer fileUrl={fileUrl} zoomLevel={zoomLevel} />;
             case "html":
@@ -214,7 +250,7 @@ export default function FilePreview({
                 currentPage={currentPage}
                 totalPages={totalPages}
                 onPageChange={handlePageChange}
-                onDownload={handleDownload}
+                onDownload={downloadHandler}
                 actions={actions}
             />
             <div className="flex flex-1 min-h-0">

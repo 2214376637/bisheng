@@ -2,15 +2,18 @@ import asyncio
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Depends
 from sqlmodel import select
 
 from bisheng.api.v1.schemas import resp_200
+from bisheng.common.dependencies.user_deps import UserPayload
+from bisheng.common.errcode.http_error import UnAuthorizedError
 from bisheng.common.errcode.knowledge import BackendProcessingError
 from bisheng.core.database import get_sync_db_session
 from bisheng.database.models.recall_chunk import RecallChunk
 from bisheng.knowledge.domain.models.knowledge_file import KnowledgeFileDao
 from bisheng.knowledge.domain.services.knowledge_service import KnowledgeService
+from bisheng.user.domain.models.user import UserDao
 
 # build router
 router = APIRouter(prefix='/qa', tags=['QA'])
@@ -40,8 +43,14 @@ async def get_answer_keyword(message_id: int):
 
 @router.post('/chunk', status_code=200)
 def get_original_file(message_id: Annotated[int, Body(embed=True)],
-                      keys: Annotated[str, Body(embed=True)]):
+                      keys: Annotated[str, Body(embed=True)],
+                      login_user: UserPayload = Depends(UserPayload.get_login_user)):
     # Get Hitskey
+    users = UserDao.get_user_by_ids([login_user.user_id])
+    user = users[0] if users else None
+    if not user:
+        raise UnAuthorizedError.http_exception()
+
     with get_sync_db_session() as session:
         chunks = session.exec(
             select(RecallChunk).where(RecallChunk.message_id == message_id)).all()
@@ -63,11 +72,18 @@ def get_original_file(message_id: Annotated[int, Body(embed=True)],
         file_access = json.loads(chunk.meta_data).get('right', True)
         chunk_res['right'] = file_access
         if file_access and file:
-            # Preview filesurl
-            original_url, preview_url = KnowledgeService.get_file_share_url(file.id)
-            chunk_res['source_url'] = preview_url
-            chunk_res['original_url'] = original_url
-            chunk_res['source'] = file.file_name
+            try:
+                KnowledgeFileDao.check_doc_permission(login_user.user_id, file.id, 'read')
+                original_url, preview_url = KnowledgeService.get_file_share_url(file.id)
+                perm = KnowledgeFileDao.get_user_file_permission(user, file.id)
+                chunk_res['source_url'] = preview_url
+                chunk_res['original_url'] = original_url if perm in ('write', 'admin') else ''
+                chunk_res['source'] = file.file_name
+            except Exception:
+                chunk_res['right'] = False
+                chunk_res['source_url'] = ''
+                chunk_res['original_url'] = ''
+                chunk_res['source'] = ''
         else:
             chunk_res['source_url'] = ''
             chunk_res['original_url'] = ''
