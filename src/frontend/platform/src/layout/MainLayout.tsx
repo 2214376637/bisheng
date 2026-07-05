@@ -47,6 +47,7 @@ export default function MainLayout() {
                 captureAndAlertRequestErrorHoc(logoutApi()).then(_ => {
                     setUser(null)
                     localStorage.removeItem('isLogin')
+                    window.location.href = '/'
                 })
                 next()
             }
@@ -74,8 +75,8 @@ export default function MainLayout() {
             <div className="flex justify-between h-[64px] bg-background-main relative z-[21]">
                 <div className="flex h-9 my-[14px]">
                     <div className="inline-block" >
-                        {/* @ts-ignore */}
-                        <img src={__APP_ENV__.BASE_URL + '/assets/bisheng/login-logo-small.png'} className="w-[104px] ml-[38px] rounded dark:w-[104px]" alt="" />
+                        {/* 换回用户的 login-logo-small.png */}
+                        <img src={__APP_ENV__.BASE_URL + '/assets/bisheng/login-logo-small.png'} className="h-[36px] ml-[38px] rounded-full object-contain" alt="logo" />
                     </div>
                 </div>
                 <div>
@@ -199,25 +200,13 @@ export default function MainLayout() {
                         <div className="help flex items-between my-3">
                             <TooltipProvider>
                                 <Tooltip>
-                                    <TooltipTrigger className="h-[72px] w-[78px] cursor-pointer bg-background-tip rounded-lg hover:bg-[#1b1f23] hover:text-[white] transition-all dark:hover:bg-background-tip-darkhover">
-                                        <Link to={"https://github.com/dataelement/bisheng"} target="_blank">
-                                            <GithubIcon className="side-bar-button-size mx-auto w-5 h-5 " />
-                                            <span className="block text-[12px] mt-[8px] font-bold">{t("menu.github")}</span>
-                                        </Link>
+                                    <TooltipTrigger className="h-[48px] w-full cursor-pointer bg-background-tip rounded-lg p-0 hover:bg-[#0055e3] hover:text-[white] transition-all flex items-center justify-center">
+                                        <a href="/workspace/" className="m-0 p-0 flex items-center justify-center w-full h-full gap-2 text-inherit hover:text-white">
+                                            <QuitIcon className="w-4 h-4" />
+                                            <span className="text-[14px] font-bold">返回前台</span>
+                                        </a>
                                     </TooltipTrigger>
-                                    <TooltipContent><p>{t("menu.github")}</p></TooltipContent>
-                                </Tooltip>
-                            </TooltipProvider>
-                            <Separator className="mx-1" orientation="vertical" />
-                            <TooltipProvider>
-                                <Tooltip>
-                                    <TooltipTrigger className="h-[72px] w-[78px] cursor-pointer bg-background-tip rounded-lg p-0 align-top hover:bg-[#0055e3] hover:text-[white]  transition-all">
-                                        <Link className="m-0 p-0" to={"https://m7a7tqsztt.feishu.cn/wiki/ZxW6wZyAJicX4WkG0NqcWsbynde"} target="_blank">
-                                            <BookOpenIcon className=" mx-auto w-5 h-5" />
-                                            <span className="block text-[12px] mt-[8px] font-bold">{t("menu.bookopen")}</span>
-                                        </Link>
-                                    </TooltipTrigger>
-                                    <TooltipContent><p>{t('menu.document')}</p></TooltipContent>
+                                    <TooltipContent><p>返回前台</p></TooltipContent>
                                 </Tooltip>
                             </TooltipProvider>
                         </div>
@@ -237,11 +226,8 @@ export default function MainLayout() {
                 <p className=" text-sm text-center">{t('menu.forBestExperience')}</p>
                 {
                     !appConfig.isPro && <div className="flex mt-8 justify-center gap-4">
-                        <a href={"https://github.com/dataelement/bisheng"} target="_blank">
-                            <GithubIcon className="side-bar-button-size mx-auto" />Github
-                        </a>
-                        <a href={"https://m7a7tqsztt.feishu.cn/wiki/ZxW6wZyAJicX4WkG0NqcWsbynde"} target="_blank">
-                            <BookOpenIcon className="side-bar-button-size mx-auto" /> {t('menu.onlineDocumentation')}
+                        <a href="/workspace/" className="flex items-center gap-2">
+                            <QuitIcon className="side-bar-button-size mx-auto" /> 返回前台
                         </a>
                     </div>
                 }

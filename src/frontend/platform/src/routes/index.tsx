@@ -60,6 +60,7 @@ const RedirectToExternalLink = () => {
   return null;
 };
 
+
 const privateRouter = [
   { path: "/", element: <RedirectToExternalLink /> },
   {
