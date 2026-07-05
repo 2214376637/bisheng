@@ -1,5 +1,4 @@
 import { BookOpenIcon } from '@/components/bs-icons/bookOpen';
-import { GithubIcon } from '@/components/bs-icons/github';
 import { useContext, useEffect, useRef, useState } from "react";
 import { useTranslation } from 'react-i18next';
 import json from "../../../package.json";
@@ -143,8 +142,11 @@ export const LoginPage = () => {
             <div className='absolute w-full h-full z-10 flex justify-end top-0'>
                 <div className='w-[852px] sm:px-[266px] px-[20px] pyx-[200px] bg-background-login relative'>
                     <div>
-                        <img src={__APP_ENV__.BASE_URL + '/assets/bisheng/login-logo-small.png'} className="block w-[114px] h-[36px] m-auto mt-[140px] dark:w-[124px] dark:pr-[10px] dark:hidden" alt="" />
-                        <img src={__APP_ENV__.BASE_URL + '/assets/bisheng/logo-small-dark.png'} className="w-[114px] h-[36px] m-auto mt-[140px] dark:w-[124px] dark:pr-[10px] dark:block hidden" alt="" />
+                        <img
+                            src={__APP_ENV__.BASE_URL + '/assets/bisheng/login-logo-small.png'}
+                            className="block w-[80px] h-[80px] m-auto mt-[120px] object-contain"
+                            alt="logo"
+                        />
                         <span className='block w-fit m-auto font-normal text-[14px] text-tx-color mt-[24px]'>{t('login.slogen')}</span>
                     </div>
                     <div className="grid gap-[12px] mt-[68px]">
@@ -219,11 +221,8 @@ export const LoginPage = () => {
                     <div className=" absolute right-[16px] bottom-[16px] flex">
                         <span className="mr-4 text-sm text-gray-400 relative top-2">v{json.version}</span>
                         {!appConfig.noFace && <div className='help flex'>
-                            <a href={"https://github.com/dataelement/bisheng"} target="_blank">
-                                <GithubIcon className="block h-[40px] w-[40px] gap-1 border p-[10px] rounded-[8px] mx-[8px] hover:bg-[#1b1f23] hover:text-[white] hover:cursor-pointer" />
-                            </a>
-                            <a href={"https://m7a7tqsztt.feishu.cn/wiki/ZxW6wZyAJicX4WkG0NqcWsbynde"} target="_blank">
-                                <BookOpenIcon className="block h-[40px] w-[40px] gap-1 border p-[10px] rounded-[8px]  hover:bg-[#0055e3] hover:text-[white] hover:cursor-pointer" />
+                            <a href={"https://m7a7tqsztt.feishu.cn/wiki/ZxW6wZyAJicX4WkG0NqcWsbynde"} target="_blank" rel="noreferrer">
+                                <BookOpenIcon className="block h-[40px] w-[40px] gap-1 border p-[10px] rounded-[8px] hover:bg-[#0055e3] hover:text-[white] hover:cursor-pointer" />
                             </a>
                         </div>}
                     </div>
