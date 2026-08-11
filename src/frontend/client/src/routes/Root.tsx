@@ -11,10 +11,15 @@ import {
   SearchContext,
   SetConvoProvider,
 } from '~/Providers';
+import { isEmbeddedMode } from '~/utils/embedMode';
 
 export default function Root() {
+  const embeddedMode = isEmbeddedMode();
   const [bannerHeight, setBannerHeight] = useState(0);
   const [navVisible, setNavVisible] = useState(() => {
+    if (embeddedMode) {
+      return false;
+    }
     const savedNavVisible = localStorage.getItem('navVisible');
     return savedNavVisible !== null ? JSON.parse(savedNavVisible) : true;
   });
@@ -39,15 +44,15 @@ export default function Root() {
           <AssistantsMapContext.Provider value={assistantsMap}>
             <AgentsMapContext.Provider value={agentsMap}>
               {/* 页面头部黑色banner */}
-              <Banner onHeightChange={setBannerHeight} />
+              {!embeddedMode && <Banner onHeightChange={setBannerHeight} />}
               <div className="flex h-full">
                 <div className="relative z-0 flex h-full w-full overflow-hidden">
                   {/* 会话列表 */}
-                  <Nav navVisible={navVisible} setNavVisible={setNavVisible} />
+                  {!embeddedMode && <Nav navVisible={navVisible} setNavVisible={setNavVisible} />}
                   {/* 会话消息面板区(路由) */}
                   <div className="relative flex h-full max-w-full flex-1 flex-col overflow-hidden">
-                    <MobileNav setNavVisible={setNavVisible} />
-                    <Outlet context={{ navVisible, setNavVisible } satisfies ContextType} />
+                    {!embeddedMode && <MobileNav setNavVisible={setNavVisible} />}
+                    <Outlet context={{ navVisible: embeddedMode ? false : navVisible, setNavVisible } satisfies ContextType} />
                   </div>
                 </div>
               </div>

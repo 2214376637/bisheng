@@ -78,6 +78,8 @@ export const tokenizer = () => '/api/tokenizer';
 
 export const login = () => '/api/auth/login';
 
+export const externalJwtLogin = () => '/api/auth/loginWithToken';
+
 export const logout = () => '/api/v1/user/logout';
 
 export const register = () => '/api/auth/register';

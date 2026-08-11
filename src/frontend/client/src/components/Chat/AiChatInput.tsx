@@ -146,6 +146,7 @@ const AiChatInput = memo(
             [isControlled, onExternalChange]
         );
         const textAreaRef = useRef<HTMLTextAreaElement>(null);
+        const safeModelOptions = Array.isArray(modelOptions) ? modelOptions : [];
         const [isTextareaScrollable, setIsTextareaScrollable] = useState(false);
         /** True only while user is actively scrolling — drives .scroll-on-scroll (see style.css). */
         const [isTextareaScrolling, setIsTextareaScrolling] = useState(false);
@@ -328,7 +329,7 @@ const AiChatInput = memo(
                         onScroll={handleTextareaScroll}
                         onHeightChange={updateTextareaScrollable}
                         disabled={disabled || isStreaming}
-                        placeholder={placeholder || bsConfig?.inputPlaceholder}
+                        placeholder={placeholder || bsConfig?.inputPlaceholder || "请输入问题"}
                         tabIndex={0}
                         data-testid="ai-chat-input"
                         data-scrolling={isTextareaScrollable && isTextareaScrolling ? "true" : "false"}
@@ -406,11 +407,11 @@ const AiChatInput = memo(
                         {/* Toolbar: model select + knowledge base + tools */}
                         <div className="absolute bottom-0 left-3 flex gap-2 items-center">
                             {/* Model select */}
-                            {modelSelect && modelOptions && !isLingsi && (
+                            {modelSelect && safeModelOptions.length > 0 && !isLingsi && (
                                 <AiModelSelect
                                     disabled={!!disabled}
                                     value={modelValue}
-                                    options={modelOptions}
+                                    options={safeModelOptions}
                                     onChange={onModelChange!}
                                 />
                             )}

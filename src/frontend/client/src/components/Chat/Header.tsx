@@ -9,10 +9,12 @@ import { useMediaQuery, useHasAccess } from '~/hooks';
 import HeaderOptions from './Input/HeaderOptions';
 import BookmarkMenu from './Menus/BookmarkMenu';
 import AddMultiConvo from './AddMultiConvo';
+import { isEmbeddedMode } from '~/utils/embedMode';
 
 const defaultInterface = getConfigDefaults().interface;
 
 export default function Header() {
+  const embeddedMode = isEmbeddedMode();
   const { data: startupConfig } = useGetStartupConfig();
   const { navVisible } = useOutletContext<ContextType>();
   const modelSpecs = useMemo(() => startupConfig?.modelSpecs?.list ?? [], [startupConfig]);
@@ -32,6 +34,10 @@ export default function Header() {
   });
 
   const isSmallScreen = useMediaQuery('(max-width: 768px)');
+
+  if (embeddedMode) {
+    return null;
+  }
 
   return (
     <div className="sticky top-0 z-10 flex h-14 w-full items-center justify-between bg-white p-2 font-semibold dark:bg-gray-800 dark:text-white">

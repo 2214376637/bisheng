@@ -9,7 +9,7 @@ import {
 } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useRecoilState } from 'recoil';
-import { setTokenHeader, SystemRoles } from '~/types/chat';
+import { dataService, setTokenHeader, SystemRoles } from '~/types/chat';
 import type * as t from '~/types/chat';
 import {
   useGetBsConfig,
@@ -118,6 +118,51 @@ const AuthContextProvider = ({
   const login = (data: t.TLoginUser) => {
     loginUser.mutate(data);
   };
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const externalToken = url.searchParams.get('token');
+    if (!externalToken) {
+      return;
+    }
+    const basePath = (__APP_ENV__.BASE_URL || '').replace(/\/$/, '');
+    const appPath = basePath && url.pathname.startsWith(basePath)
+      ? url.pathname.slice(basePath.length) || '/'
+      : url.pathname;
+    const canConsumeExternalToken = appPath === '/'
+      || appPath.startsWith('/c')
+      || appPath.startsWith('/app')
+      || appPath.startsWith('/apps')
+      || appPath.startsWith('/knowledge')
+      || appPath.startsWith('/channel')
+      || appPath.startsWith('/linsight');
+    if (!canConsumeExternalToken) {
+      return;
+    }
+
+    url.searchParams.delete('token');
+    window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
+
+    let cancelled = false;
+    dataService.externalJwtLogin(externalToken)
+      .then((data: t.TLoginResponse) => {
+        if (cancelled) return;
+        const { user, token } = data;
+        setError(undefined);
+        setUserContext({ token, isAuthenticated: true, user });
+        userQuery.refetch();
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error('External JWT login failed:', err);
+        doSetError('第三方登录失败');
+        navigate('/login', { replace: true });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [doSetError, navigate, setUserContext, userQuery]);
 
   const silentRefresh = useCallback(() => {
     if (authConfig?.test === true) {

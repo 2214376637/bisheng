@@ -43,17 +43,24 @@ export default function FilePreviewPage() {
             .then((data) => {
                 setCanDownload(Boolean(data.can_download));
                 // preview_url 已由后端为 txt/md/图片等内嵌格式补全；只读用户走 preview_url，不写 original 下载
-                const chosenUrl = data.preview_url || (data.can_download ? data.original_url : "");
-                if (!chosenUrl) {
-                    setFileUrl("");
-                    return;
-                }
-
                 const ext = resolvePreviewFileType(fileName, {
                     typeParam: fileTypeParam,
                     apiFileExt: data.file_ext,
-                    url: chosenUrl,
+                    url: data.preview_url || data.original_url,
                 });
+
+                // Spreadsheet viewers parse the workbook in the browser, so they need
+                // the original file bytes instead of an office-converted preview URL.
+                // Use the content endpoint to avoid MinIO signed URL path/host mismatch.
+                const isSpreadsheet = /^(xls|xlsx|csv)$/.test(ext);
+                const chosenUrl = isSpreadsheet
+                    ? `/api/v1/knowledge/space/${spaceId}/files/${fileId}/content`
+                    : data.preview_url || (data.can_download ? data.original_url : "");
+                if (!chosenUrl) {
+                    setFileUrl("");
+                    setFileType(ext);
+                    return;
+                }
 
                 // If backend didn't produce a preview_url and the original is ppt/pptx,
                 // the raw file can't be rendered — mark as conversion failed.

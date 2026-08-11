@@ -1,6 +1,9 @@
 from contextlib import asynccontextmanager
 
-from mcp.client.streamable_http import streamablehttp_client
+try:
+    from mcp.client.streamable_http import streamablehttp_client
+except ImportError:
+    from mcp.client.streamable_http import streamable_http_client as streamablehttp_client
 
 from bisheng.mcp_manage.clients.base import BaseMcpClient
 

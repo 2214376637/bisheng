@@ -37,6 +37,7 @@ export default function ProgressItem({ analysis = false, knowledgeId = '', item,
                     id: item.id,
                     fileName: item.fileName,
                     file_path: res.file_path,
+                    rawFile: item.file,
                     repeat: res.repeat,
                     time: res.repeat_update_time
                 })

@@ -1,8 +1,14 @@
 from base64 import b64decode
 from datetime import datetime
+import hashlib
+import hmac
+import json
+import os
+import time
 from typing import List, TYPE_CHECKING
 from urllib.parse import unquote, urlsplit
 
+import httpx
 import rsa
 from fastapi import Request, Depends, UploadFile, HTTPException
 
@@ -233,6 +239,154 @@ class UserService:
                                           event_data=UserLoginEventData(method="password"))
 
         return resp_200(await cls.build_user_read(db_user, access_token=access_token))
+
+    @classmethod
+    async def validate_external_jwt_token(cls, token: str) -> dict:
+        if cls._is_external_jwt_mock_enabled():
+            return cls._get_external_jwt_mock_user(token)
+
+        validate_url = os.getenv('BISHENG_EXTERNAL_JWT_VALIDATE_URL') or os.getenv('EXTERNAL_JWT_VALIDATE_URL')
+        if not validate_url:
+            raise HTTPException(status_code=503, detail='External JWT login is not configured')
+
+        app_secret = os.getenv('BISHENG_EXTERNAL_JWT_APP_SECRET') or os.getenv('JWT_SHARED_SECRET')
+        if not app_secret:
+            raise HTTPException(status_code=503, detail='External JWT AppSecret is not configured')
+
+        body = {'token': token}
+        body_json = json.dumps(body, ensure_ascii=False, separators=(',', ':'))
+        timestamp = str(int(time.time() * 1000))
+        sign = hmac.new(
+            app_secret.encode('utf-8'),
+            f'{body_json}{timestamp}'.encode('utf-8'),
+            hashlib.sha256,
+        ).hexdigest()
+        headers = {
+            'Content-Type': 'application/json',
+            'X-Bisheng-AppId': os.getenv('BISHENG_EXTERNAL_JWT_APP_ID', 'bisheng_platform'),
+            'X-Bisheng-Sign': sign,
+            'X-Timestamp': timestamp,
+        }
+
+        timeout = float(os.getenv('BISHENG_EXTERNAL_JWT_VALIDATE_TIMEOUT', '3'))
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(validate_url, content=body_json.encode('utf-8'), headers=headers)
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=502, detail='External token validation service unavailable') from exc
+
+        if response.status_code != 200:
+            status_code = response.status_code if response.status_code in (401, 403) else 401
+            raise HTTPException(status_code=status_code, detail='External token validation failed')
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail='Invalid external token validation response') from exc
+
+        if isinstance(payload, dict):
+            status_code = payload.get('status_code', payload.get('code'))
+            success = payload.get('success')
+            if status_code not in (None, 0, 200) or success is False:
+                raise HTTPException(
+                    status_code=401,
+                    detail=payload.get('status_message') or payload.get('message') or 'External token validation failed',
+                )
+
+        user_info = payload
+        if isinstance(payload, dict):
+            for key in ('data', 'result', 'user', 'userInfo', 'user_info'):
+                if isinstance(payload.get(key), dict):
+                    user_info = payload[key]
+                    break
+        if not isinstance(user_info, dict):
+            raise HTTPException(status_code=502, detail='External token validation response missing user info')
+        return user_info
+
+    @staticmethod
+    def _is_external_jwt_mock_enabled() -> bool:
+        value = os.getenv('BISHENG_EXTERNAL_JWT_MOCK_ENABLED', '').strip().lower()
+        return value in ('1', 'true', 'yes', 'on')
+
+    @staticmethod
+    def _get_external_jwt_mock_user(token: str) -> dict:
+        mock_user_json = os.getenv('BISHENG_EXTERNAL_JWT_MOCK_USER_JSON')
+        if mock_user_json:
+            try:
+                user_info = json.loads(mock_user_json)
+            except ValueError as exc:
+                raise HTTPException(status_code=503, detail='Invalid external JWT mock user JSON') from exc
+            if not isinstance(user_info, dict):
+                raise HTTPException(status_code=503, detail='External JWT mock user must be a JSON object')
+            return user_info
+
+        username = os.getenv('BISHENG_EXTERNAL_JWT_MOCK_USERNAME', 'external_mock_user')
+        return {
+            'userId': os.getenv('BISHENG_EXTERNAL_JWT_MOCK_USER_ID', 'mock_user_001'),
+            'username': username,
+            'realname': os.getenv('BISHENG_EXTERNAL_JWT_MOCK_REALNAME', username),
+            'email': os.getenv('BISHENG_EXTERNAL_JWT_MOCK_EMAIL', f'{username}@example.com'),
+            'avatar': os.getenv('BISHENG_EXTERNAL_JWT_MOCK_AVATAR', ''),
+            'token': token,
+        }
+
+    @staticmethod
+    def _get_external_user_name(user_info: dict) -> str:
+        for key in ('username', 'user_name', 'loginName', 'login_name', 'account', 'name', 'realname'):
+            value = user_info.get(key)
+            if value:
+                return str(value).strip()
+        raise HTTPException(status_code=401, detail='External token user info missing username')
+
+    @classmethod
+    async def user_login_with_external_jwt(cls, request: Request, token: str, auth_jwt: AuthJwt = Depends()):
+        from bisheng.api.services.audit_log import AuditLogService
+
+        user_info = await cls.validate_external_jwt_token(token)
+        account_name = cls._get_external_user_name(user_info)
+        if len(account_name) > 30:
+            raise UserNameTooLongError()
+
+        db_user = await UserDao.aget_user_by_username(account_name)
+        if not db_user:
+            new_user = User(
+                user_name=account_name,
+                password='',
+                email=user_info.get('email'),
+                phone_number=user_info.get('phone_number') or user_info.get('phone'),
+                avatar=user_info.get('avatar'),
+                remark='external_jwt',
+            )
+            user_all = UserDao.get_all_users(page=1, limit=1)
+            default_admin = settings.get_system_login_method().admin_username
+            if len(user_all) == 0 or (default_admin and default_admin == account_name):
+                db_user = await UserDao.add_user_and_admin_role(new_user)
+            else:
+                db_user = await UserDao.add_user_and_default_role(new_user)
+            await UserGroupDao.add_default_user_group(db_user.user_id)
+
+        if db_user.delete == 1:
+            raise UserForbiddenError()
+
+        access_token = LoginUser.create_access_token(user=db_user, auth_jwt=auth_jwt)
+        LoginUser.set_access_cookies(access_token, auth_jwt=auth_jwt)
+
+        redis_client = await get_redis_client()
+        await redis_client.aset(USER_CURRENT_SESSION.format(db_user.user_id), access_token,
+                                auth_jwt.cookie_conf.jwt_token_expire_time + 3600)
+
+        login_user = await LoginUser.init_login_user(db_user.user_id, db_user.user_name)
+        AuditLogService.user_login(login_user, get_request_ip(request))
+        await telemetry_service.log_event(user_id=db_user.user_id, event_type=BaseTelemetryTypeEnum.USER_LOGIN,
+                                          trace_id=trace_id_var.get(),
+                                          event_data=UserLoginEventData(method="external_jwt"))
+
+        return resp_200(await cls.build_user_read(db_user, access_token=access_token))
+
+    @classmethod
+    async def user_login_with_external_jwt_data(cls, request: Request, token: str, auth_jwt: AuthJwt = Depends()) -> UserRead:
+        response = await cls.user_login_with_external_jwt(request, token=token, auth_jwt=auth_jwt)
+        return response.data
 
     @classmethod
     def get_user_all_info(cls, *, start_time: datetime = None, end_time: datetime = None, user_ids: List[int] = None,

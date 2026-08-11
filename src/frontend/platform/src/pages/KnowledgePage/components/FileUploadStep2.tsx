@@ -19,6 +19,7 @@ export interface FileItem {
     id: string;
     fileName: string;
     file_path: string;
+    rawFile?: File;
     fileType: 'table' | 'file';
     suffix: string;
     isEtl4lm?: string;
@@ -435,6 +436,7 @@ const useFileProcessingRules = (
                     filePath: file.file_path,
                     fileName: file.fileName,
                     previewUrl: file.previewUrl,
+                    rawFile: file.rawFile,
                     suffix: file.suffix,
                     fileType: file.fileType,
                     excelRule: file.fileType === 'table' ? {

@@ -12,6 +12,7 @@ import { currentChatState, currentRunningState } from "./store/atoms";
 import useChatHelpers from "./useChatHelpers";
 import { useWebSocket } from "./useWebsocket";
 import { generateUUID } from "~/utils";
+import { isEmbeddedMode } from "~/utils/embedMode";
 
 export default function ChatView({ data, cid, v, readOnly }) {
     const { user } = useAuthContext();
@@ -26,6 +27,7 @@ export default function ChatView({ data, cid, v, readOnly }) {
     const running = useRecoilValue(currentRunningState);
     const conversations = useRecoilValue(appConversationsState);
     const [, setConversations] = useRecoilState(appConversationsState);
+    const embeddedMode = isEmbeddedMode();
 
     // Lightweight createNewChat — avoids importing useAppSidebar which would
     // spin up a second auto-fetch/auto-select effect and overwrite placeholders.
@@ -62,10 +64,12 @@ export default function ChatView({ data, cid, v, readOnly }) {
     }, [data]);
 
     return <div className="relative h-full flex flex-col">
-        <HeaderTitle
-            readOnly={readOnly}
-            conversation={{ title: data.name, flowId: data.id, conversationId: cid, flowType: data.flow_type }}
-        />
+        {!embeddedMode && (
+            <HeaderTitle
+                readOnly={readOnly}
+                conversation={{ title: data.name, flowId: data.id, conversationId: cid, flowType: data.flow_type }}
+            />
+        )}
         <div className="min-h-0 flex-1 flex flex-col bg-[position:0_100%] bg-repeat-x bg-[length:10px_432px]">
             {showChatEmptyState ? (
                 <div className="flex min-h-0 flex-1 flex-col">

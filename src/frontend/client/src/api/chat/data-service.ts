@@ -122,9 +122,34 @@ export function getSearchEnabled(): Promise<boolean> {
   return Promise.resolve(true);
 }
 
+const mapBackendUser = (rawUser: any): t.TUser => {
+  const { user_id, user_name, create_time, update_time, role, web_menu = [], avatar } = rawUser;
+  return {
+    "_id": user_id,
+    "name": user_name,
+    "username": user_name,
+    "email": rawUser.email || user_name,
+    "emailVerified": true,
+    "avatar": avatar
+      ? String(avatar).startsWith("/")
+        ? `${__APP_ENV__.BASE_URL}${avatar}`
+        : `${__APP_ENV__.BASE_URL}/${avatar}`
+      : "",
+    "provider": "local",
+    "role": role,
+    "plugins": web_menu,
+    "termsAccepted": false,
+    "backupCodes": [],
+    "refreshToken": [],
+    "createdAt": create_time,
+    "updatedAt": update_time,
+    "id": user_id
+  };
+};
+
 export function getUser(): Promise<t.TUser> {
   return request.get(endpoints.user()).then(res => {
-    const { user_id, user_name, create_time, update_time, role, web_menu, avatar } = res.data;
+    const { role, web_menu = [] } = res.data;
     if (role !== 'admin' && !web_menu.includes('frontend')) {
       if (!web_menu.includes('backend')) {
         // No frontend or backend permission — logout to avoid infinite redirect loop
@@ -135,29 +160,7 @@ export function getUser(): Promise<t.TUser> {
       }
       location.href = `${location.origin}${__APP_ENV__.BISHENG_HOST}?error=90002`  // workspace useErrorPrompt
     }
-    return {
-      "_id": user_id,
-      "name": user_name,
-      "username": user_name,
-      "email": user_name,
-      "emailVerified": true,
-      // Backend avatar is usually a path like "/bisheng/avatar/..jpg?...".
-      // Convert it to a front-end accessible URL using BASE_URL.
-      "avatar": avatar
-        ? String(avatar).startsWith("/")
-          ? `${__APP_ENV__.BASE_URL}${avatar}`
-          : `${__APP_ENV__.BASE_URL}/${avatar}`
-        : "",
-      "provider": "local",
-      "role": role,
-      "plugins": web_menu,
-      "termsAccepted": false,
-      "backupCodes": [],
-      "refreshToken": [],
-      "createdAt": create_time,
-      "updatedAt": update_time,
-      "id": user_id
-    }
+    return mapBackendUser(res.data)
   });
 }
 
@@ -171,6 +174,17 @@ export const updateTokenCount = (text: string) => {
 
 export const login = (payload: t.TLoginUser): Promise<t.TLoginResponse> => {
   return request.post(endpoints.login(), payload);
+};
+
+export const externalJwtLogin = async (token: string): Promise<t.TLoginResponse> => {
+  const res = await request.post(endpoints.externalJwtLogin(), { token });
+  const payload = res?.data ?? res?.result ?? res;
+  const accessToken = payload?.accessToken ?? payload?.access_token;
+  const user = await getUser();
+  return {
+    token: accessToken,
+    user,
+  };
 };
 
 export const logout = (): Promise<m.TLogoutResponse> => {

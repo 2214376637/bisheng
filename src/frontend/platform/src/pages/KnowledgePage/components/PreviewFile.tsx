@@ -269,7 +269,7 @@ export default function PreviewFile({
       case 'csv':
         return (
           <div>
-            <ExcelPreview filePath={previewUrl || url} />
+            <ExcelPreview filePath={previewUrl || url} rawFile={targetFile?.rawFile} />
           </div>
         )
       default:

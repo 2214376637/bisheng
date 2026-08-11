@@ -15,6 +15,7 @@ import { useAuthContext, useLocalize } from '~/hooks';
 import { Tooltip, TooltipContent, TooltipTrigger } from '~/components/ui/Tooltip2';
 import store from '~/store';
 import { cn } from '~/utils';
+import { isEmbeddedMode } from '~/utils/embedMode';
 import { UserPopMenu } from './UserPopMenu';
 
 // Module-level storage for the last visited path per sidebar section.
@@ -180,6 +181,7 @@ export default function MainLayout() {
   const { pathname } = useLocation();
   const outlet = useOutlet();
   const { user, logout, isUserLoading } = useAuthContext();
+  const embeddedMode = isEmbeddedMode();
 
   // Auth guard: redirect to login when user query finishes without a valid user.
   // The 401 interceptor in request.ts already handles production redirect,
@@ -226,14 +228,19 @@ export default function MainLayout() {
 
   return (
     <div className="flex bg-[#F9F9F9] overflow-hidden w-screen">
-      <Sidebar />
-      <main className="flex-1 h-screen relative p-2 pl-0 min-w-0">
+      {!embeddedMode && <Sidebar />}
+      <main className={cn("flex-1 h-screen relative min-w-0", embeddedMode ? "p-0" : "p-2 pl-0")}>
         <KeepAlive
           name={cacheKey}
           id={cacheKey}
           saveScroll={true}
         >
-          <div className="h-[calc(100vh-16px)] overflow-y-auto overscroll-y-none scrollbar-on-hover rounded-xl bg-white shadow-xl">
+          <div
+            className={cn(
+              "overflow-y-auto overscroll-y-none scrollbar-on-hover bg-white",
+              embeddedMode ? "h-screen" : "h-[calc(100vh-16px)] rounded-xl shadow-xl",
+            )}
+          >
             {outlet}
           </div>
         </KeepAlive>

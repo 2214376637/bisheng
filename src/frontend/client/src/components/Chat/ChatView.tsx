@@ -33,6 +33,19 @@ const ChatView = ({ id = '', index = 0, shareToken = '' }: { id?: string, index?
   const [chatModel, setChatModel] = useRecoilState(store.chatModel);
   const [selectedOrgKbs, setSelectedOrgKbs] = useRecoilState(store.selectedOrgKbs);
   const [searchType, setSearchType] = useRecoilState(store.searchType);
+  const modelOptions = Array.isArray(bsConfig?.models) ? bsConfig.models : [];
+
+  useEffect(() => {
+    if (!modelOptions.length) return;
+    const hasCurrentModel = modelOptions.some((model) => String(model.id) === String(chatModel.id));
+    if (hasCurrentModel) return;
+
+    const firstModel = modelOptions[0];
+    setChatModel({
+      id: Number(firstModel.id),
+      name: firstModel.displayName || firstModel.name || '',
+    });
+  }, [chatModel.id, modelOptions, setChatModel]);
 
   // Core chat state — replaces old ChatContext + useSSE + useChatHelpers
   const {
@@ -189,13 +202,13 @@ const ChatView = ({ id = '', index = 0, shareToken = '' }: { id?: string, index?
                   setShowCode={setShowCode}
                 />
                 : <AiChatInput
-                  disabled={!bsConfig?.models?.length || !!shareToken}
+                  disabled={!!shareToken}
                   isStreaming={isStreaming}
                   onScrollToBottom={() => { }}
-                  modelOptions={bsConfig?.models}
+                  modelOptions={modelOptions}
                   modelValue={chatModel.id}
                   onModelChange={(val) => {
-                    const model = bsConfig?.models?.find((m) => m.id === val);
+                    const model = modelOptions.find((m) => String(m.id) === String(val));
                     setChatModel({
                       id: Number(val),
                       name: model?.displayName || '',

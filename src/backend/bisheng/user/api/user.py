@@ -42,8 +42,33 @@ from ...core.logger import trace_id_var
 
 # build router
 router = APIRouter(prefix='', tags=['User'])
+auth_router = APIRouter(prefix='/api/auth', tags=['User'])
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl='token')
+
+
+class ExternalJwtLoginRequest(BaseModel):
+    token: str
+
+
+def build_external_jwt_login_response(user: UserRead, auth_jwt: AuthJwt):
+    return {
+        'code': 0,
+        'message': 'Login successful',
+        'data': {
+            'accessToken': user.access_token,
+            'tokenType': 'Bearer',
+            'expiresIn': auth_jwt.cookie_conf.jwt_token_expire_time,
+            'user': {
+                'id': str(user.user_id),
+                'username': user.user_name,
+                'nickname': user.user_name,
+                'avatar': user.avatar,
+                'roles': [user.role] if user.role else ['user'],
+                'permissions': user.web_menu or ['*'],
+            },
+        },
+    }
 
 
 @router.post('/user/regist')
@@ -110,6 +135,17 @@ def clear_error_password_key(username: str):
 @router.post('/user/login')
 async def login(*, request: Request, user: UserLogin, auth_jwt: AuthJwt = Depends()):
     return await UserService.user_login(request, user=user, auth_jwt=auth_jwt)
+
+
+@router.post('/user/integration/login')
+async def integration_login(*, request: Request, body: ExternalJwtLoginRequest, auth_jwt: AuthJwt = Depends()):
+    return await UserService.user_login_with_external_jwt(request, token=body.token, auth_jwt=auth_jwt)
+
+
+@auth_router.post('/loginWithToken')
+async def login_with_token(*, request: Request, body: ExternalJwtLoginRequest, auth_jwt: AuthJwt = Depends()):
+    user = await UserService.user_login_with_external_jwt_data(request, token=body.token, auth_jwt=auth_jwt)
+    return build_external_jwt_login_response(user, auth_jwt)
 
 
 @router.get('/user/admin')

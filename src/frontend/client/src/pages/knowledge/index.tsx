@@ -35,9 +35,11 @@ import { useFileUpload } from "./hooks/useFileUpload";
 import { useAiSplitPane } from "./hooks/useAiSplitPane";
 import { useLocalize } from "~/hooks";
 import { useAuthContext } from "~/hooks/AuthContext";
+import { isEmbeddedMode } from "~/utils/embedMode";
 
 export default function Knowledge() {
     const localize = useLocalize();
+    const embeddedMode = isEmbeddedMode();
     const MAX_USER_SPACES = 30;
     const previewNavTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [activeSpace, setActiveSpace] = useState<KnowledgeSpace | null>(null);
@@ -531,20 +533,22 @@ export default function Knowledge() {
                 </div>
             )}
 
-            <KnowledgeSpaceSidebar
-                activeSpaceId={activeSpace?.id}
-                onSpaceSelect={handleSpaceSelect}
-                onCreateSpace={handleCreateSpace}
-                onSpaceSettings={handleSpaceSettings}
-                onManageMembers={(space) => {
-                    setMemberDialogSpace(space);
-                    setMemberDialogOpen(true);
-                }}
-                onKnowledgeSquare={() => setShowKnowledgeSquare(true)}
-                collapsed={sidebarCollapsed}
-                onCollapsedChange={setSidebarCollapsed}
-                hideExpandToggleWhenCollapsed={!!activeSpace}
-            />
+            {!embeddedMode && (
+                <KnowledgeSpaceSidebar
+                    activeSpaceId={activeSpace?.id}
+                    onSpaceSelect={handleSpaceSelect}
+                    onCreateSpace={handleCreateSpace}
+                    onSpaceSettings={handleSpaceSettings}
+                    onManageMembers={(space) => {
+                        setMemberDialogSpace(space);
+                        setMemberDialogOpen(true);
+                    }}
+                    onKnowledgeSquare={() => setShowKnowledgeSquare(true)}
+                    collapsed={sidebarCollapsed}
+                    onCollapsedChange={setSidebarCollapsed}
+                    hideExpandToggleWhenCollapsed={!!activeSpace}
+                />
+            )}
 
             {activeSpace ? (
                 <div ref={aiPane.splitContainerRef} className="flex h-full min-w-0 flex-1 overflow-hidden">

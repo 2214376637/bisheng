@@ -26,6 +26,7 @@ import { ChannelSidebar } from "./Sidebar/ChannelSidebar";
 import { CreateChannelDrawer } from "./CreateChannel/CreateChannelDrawer";
 import type { CreateChannelFormData } from "./CreateChannel/CreateChannelDrawer";
 import { buildCreateChannelPayload } from "./channelUtils";
+import { isEmbeddedMode } from "~/utils/embedMode";
 
 const MAX_USER_CHANNELS = 10;
 
@@ -36,6 +37,7 @@ const extractShareChannelIdFromPath = (pathname: string): string | undefined => 
 
 export default function Subscription() {
     const localize = useLocalize();
+    const embeddedMode = isEmbeddedMode();
     const { user, isUserLoading } = useAuthContext();
     const { channelId } = useParams<{ channelId?: string }>();
     const navigate = useNavigate();
@@ -401,7 +403,7 @@ export default function Subscription() {
             ) : (
                 <>
                     {/* left sidebar */}
-                    <ChannelSidebar
+                    {!embeddedMode && <ChannelSidebar
                         activeChannelId={activeChannel?.id}
                         suppressAutoSelect={!!previewChannelId}
                         onChannelSelect={handleChannelSelect}
@@ -428,7 +430,7 @@ export default function Subscription() {
                                 }
                             })();
                         }}
-                    />
+                    />}
 
                     {activeChannel ? (
                         <ChannelLayout

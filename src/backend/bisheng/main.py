@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, ORJSONResponse
 from loguru import logger
 
-from bisheng.api import router, router_rpc
+from bisheng.api import auth_router, router, router_rpc
 from bisheng.common.errcode import BaseErrorCode
 from bisheng.common.exceptions.auth import AuthJWTException
 from bisheng.common.init_data import init_default_data
@@ -100,6 +100,7 @@ def create_app():
 
     app.include_router(router)
     app.include_router(router_rpc)
+    app.include_router(auth_router)
     if settings.debug:
         import tracemalloc
         tracemalloc.start()

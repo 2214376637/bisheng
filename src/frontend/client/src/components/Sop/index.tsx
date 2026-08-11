@@ -13,11 +13,13 @@ import { TaskFlow } from './TaskFlow';
 import { useLocalize } from '~/hooks';
 import { CheckIcon, MousePointerClick } from 'lucide-react';
 import { Button } from '../ui';
+import { isEmbeddedMode } from '~/utils/embedMode';
 
 export default function index({ id = '', vid = '', shareToken = '' }) {
     // 获取url参数
     const { conversationId: cid, sopId: sid } = useParams();
     const conversationId = cid || id;
+    const embeddedMode = isEmbeddedMode();
     const [isSharePage] = useState(!!vid);
     // 兼容历史链接 case开头
     const sopId = conversationId ? (conversationId.match(/case(\d+)/)?.[1] || '') : sid; // Compatible with historical cases 
@@ -32,16 +34,18 @@ export default function index({ id = '', vid = '', shareToken = '' }) {
                     <LoadingIcon />
                 </div>
             }
-            <Header
-                isLoading={isLoading}
-                chatId={conversationId}
-                setVersionId={switchVersion}
-                versionId={versionId}
-                isSharePage={isSharePage || sid} // when case sharebutton is hide 
-                versions={versions}
-            />
+            {!embeddedMode && (
+                <Header
+                    isLoading={isLoading}
+                    chatId={conversationId}
+                    setVersionId={switchVersion}
+                    versionId={versionId}
+                    isSharePage={isSharePage || sid} // when case sharebutton is hide 
+                    versions={versions}
+                />
+            )}
 
-            {isLoading ? <LoadingBox /> : <div className='w-full h-[calc(100vh-68px)] p-2 pt-0'>
+            {isLoading ? <LoadingBox /> : <div className={embeddedMode ? 'w-full h-screen p-2' : 'w-full h-[calc(100vh-68px)] p-2 pt-0'}>
                 <div className='h-full flex gap-2'>
                     <SOPEditor
                         sopError={error}

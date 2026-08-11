@@ -38,6 +38,8 @@ RUN for i in 1 2 3; do \
     done
 
 # 3. 复制其余所有源码文件
+ARG SOURCE_CACHE_BUST=1
+RUN echo "source cache bust: ${SOURCE_CACHE_BUST}"
 COPY . /app
 
 # 4. 执行生产打包构建

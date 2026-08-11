@@ -1,3 +1,3 @@
-from bisheng.api.router import router, router_rpc
+from bisheng.api.router import auth_router, router, router_rpc
 
-__all__ = ['router', 'router_rpc']
+__all__ = ['auth_router', 'router', 'router_rpc']

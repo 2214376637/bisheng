@@ -12,6 +12,8 @@ from bisheng.api.v1.schemas import (
     KnowledgeSpaceConfig,
     LinsightConfig,
     SubscriptionConfig,
+    WSModel,
+    WSPrompt,
     WorkstationConfig,
 )
 from bisheng.common.dependencies.user_deps import UserPayload
@@ -89,6 +91,31 @@ class WorkStationService(BaseService):
         return ret
 
     @classmethod
+    async def _build_default_daily_config(cls) -> WorkstationConfig | None:
+        workbench_llm = await LLMService.get_workbench_llm()
+        default_model = (
+            workbench_llm.knowledge_space_llm
+            or workbench_llm.chat_title_llm
+            or workbench_llm.task_model
+        )
+        if not default_model or not default_model.id:
+            return None
+
+        model = WSModel(
+            id=str(default_model.id),
+            key=default_model.key or str(default_model.id),
+            name=default_model.name or default_model.displayName or str(default_model.id),
+            displayName=default_model.displayName or default_model.name or str(default_model.id),
+        )
+        return WorkstationConfig(
+            inputPlaceholder='请输入问题',
+            models=[model],
+            webSearch=WSPrompt(enabled=False, prompt=''),
+            knowledgeBase=WSPrompt(enabled=True, prompt=''),
+            fileUpload=WSPrompt(enabled=True, prompt=''),
+        )
+
+    @classmethod
     def get_config(cls) -> WorkstationConfig | None:
         """Get the default workstation configuration."""
         config = ConfigDao.get_config(ConfigKeyEnum.WORKSTATION)
@@ -98,13 +125,13 @@ class WorkStationService(BaseService):
     async def aget_config(cls) -> WorkstationConfig | None:
         """Get the default workstation configuration asynchronously."""
         config = await ConfigDao.aget_config(ConfigKeyEnum.WORKSTATION)
-        return cls.parse_config(config)
+        return cls.parse_config(config) or await cls._build_default_daily_config()
 
     @classmethod
     async def get_daily_chat_config(cls) -> WorkstationConfig | None:
         """Get the default workstation configuration for daily chat."""
         config = await ConfigDao.aget_config(ConfigKeyEnum.WORKSTATION)
-        return cls.parse_config(config)
+        return cls.parse_config(config) or await cls._build_default_daily_config()
 
     @classmethod
     async def update_daily_chat_config(cls, data: WorkstationConfig) -> WorkstationConfig:

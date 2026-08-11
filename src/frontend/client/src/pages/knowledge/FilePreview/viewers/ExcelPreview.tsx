@@ -1,10 +1,28 @@
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import XlsxPopulate from 'xlsx-populate/browser/xlsx-populate';
 import { LoadingIcon } from "~/components/ui/icon/Loading";
 
 const ExcelPreview = ({ filePath, fileExt: fileExtProp }: { filePath: string; fileExt?: string }) => {
-    const t = useMemo((str) => () => str, [])
+    const t = useCallback((key: string, params?: Record<string, any>) => {
+        const messages: Record<string, string> = {
+            filePathEmpty: "文件路径为空",
+            fileLoadFailed: "文件加载失败",
+            fileContentEmpty: "文件内容为空",
+            excelParseFailed: "Excel 解析失败",
+            unsupportedType: `不支持的文件类型: ${params?.type || ""}`,
+            currentSheetNoData: "暂无数据",
+            rowNumber: "行号",
+            defaultColumnName: `列 ${params?.index || ""}`,
+            loading: "加载中...",
+            supportedFormats: "支持 xls、xlsx、csv",
+            previewFailed: "预览失败",
+            downloadOriginal: "下载原始文件",
+            fileLoadTimeout: "文件加载超时",
+            unknownError: "未知错误",
+        };
+        return messages[key] || key;
+    }, []);
 
     // ---------------------- State Management ----------------------
     const [loading, setLoading] = useState(true);
@@ -204,6 +222,9 @@ const ExcelPreview = ({ filePath, fileExt: fileExtProp }: { filePath: string; fi
 
     // ---------------------- Data Fetching and Parsing ----------------------
     useEffect(() => {
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 30000);
+
         const fetchAndParseFile = async () => {
             try {
                 setLoading(true);
@@ -215,7 +236,7 @@ const ExcelPreview = ({ filePath, fileExt: fileExtProp }: { filePath: string; fi
 
                 if (!filePath) throw new Error(t('filePathEmpty'));
 
-                const response = await fetch(filePath);
+                const response = await fetch(filePath, { signal: controller.signal });
                 if (!response.ok) throw new Error(`${t('fileLoadFailed')}: ${response.status}`);
 
                 const arrayBuffer = await response.arrayBuffer();
@@ -279,8 +300,14 @@ const ExcelPreview = ({ filePath, fileExt: fileExtProp }: { filePath: string; fi
 
             } catch (err) {
                 console.error("File parsing failed:", err);
-                setError(err.message || t('unknownError'));
+                const error = err as Error & { name?: string };
+                if (error?.name === "AbortError") {
+                    setError(t('fileLoadTimeout'));
+                } else {
+                    setError(error.message || t('unknownError'));
+                }
             } finally {
+                window.clearTimeout(timeoutId);
                 setLoading(false);
             }
         };
@@ -290,7 +317,12 @@ const ExcelPreview = ({ filePath, fileExt: fileExtProp }: { filePath: string; fi
             setLoading(false);
             setError(t('filePathEmpty'));
         }
-    }, [filePath, t]);
+
+        return () => {
+            window.clearTimeout(timeoutId);
+            controller.abort();
+        };
+    }, [filePath, fileExt, t]);
 
 
 
